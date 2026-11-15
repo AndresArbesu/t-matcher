@@ -40,20 +40,23 @@ export function MatchRecordingForm({ players, matches, t, pendingId, onSetPlayed
     <Card>
       <CardHeader>
         <CardTitle>{t.recordMatch}</CardTitle>
+        <p className="text-sm text-muted-foreground">
+          {t.playedCount(matches.filter((m) => m.played).length, matches.length)}
+        </p>
       </CardHeader>
-      <CardContent className="space-y-6">
+      <CardContent className="space-y-4 sm:space-y-6">
         {matches.map((match, index) => {
           const noteId = `notes-${match.id}`
           const pending = pendingId === match.id
           return (
-            <div key={match.id} className="border rounded-lg p-4 space-y-3">
+            <div key={match.id} className="border rounded-lg p-3 sm:p-4 space-y-3">
               <div className="flex items-center justify-between">
                 <h4 className="font-semibold">
                   {t.match} {index + 1}
                 </h4>
                 {match.played && <Badge variant="default">{t.played}</Badge>}
               </div>
-              <div className="grid grid-cols-2 gap-6">
+              <div className="grid grid-cols-2 gap-3 sm:gap-6 [&>div]:min-w-0 [&>div]:break-words">
                 <div>
                   <h5 className="font-medium text-blue-600">{t.team1}</h5>
                   {match.team1.map((id) => (
@@ -79,7 +82,7 @@ export function MatchRecordingForm({ players, matches, t, pendingId, onSetPlayed
                 />
               </div>
               <Button
-                className="w-full"
+                className="w-full min-h-11"
                 variant={match.played ? "outline" : "default"}
                 disabled={pending}
                 onClick={() => onSetPlayed(match.id, !match.played, notes[match.id] ?? match.notes ?? "")}

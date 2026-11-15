@@ -37,6 +37,7 @@ Individual rivals are counted per opposing *pair*, so facing someone you met bef
 
 1. Create a **new** Supabase project (the migration refuses to run over the legacy v0 schema).
 2. Apply `supabase/migrations/20261115000000_persistent_scheduler.sql`: paste it into the SQL editor, or `supabase link` + `supabase db push` if you use the CLI. Read it first; it creates four tables with RLS enabled and forced, revokes default grants, and adds the `save_session_draft` function.
+   Then apply `supabase/migrations/20261116000000_skill_levels_1_to_5.sql` (limits skill to 1–5). On a database that already holds players it first counts any player above 5 and, if there are any, aborts with a message **without changing data or the old constraint**; review them with `select id, name, skill_level from public.players where skill_level > 5;`, choose their new 1–5 level yourself, then re-run it.
 3. In Auth settings: enable the Email provider; add `http://localhost:3000/auth/callback` (and your own deployed URL later) to the redirect URLs. For the emailed **code** option, include `{{ .Token }}` in the Magic Link email template; the link works without it. After you have signed in once, consider turning off "Allow new users to sign up" so nobody else can create an account on your project.
 4. Configure and run:
 
@@ -54,7 +55,7 @@ For an isolated local integration test, run `npx supabase start --exclude realti
 
 | Table | Purpose |
 | --- | --- |
-| `players` | `owner_id`, name (unique per owner, case-insensitive), skill 1–10, `active` |
+| `players` | `owner_id`, name (unique per owner, case-insensitive), skill 1–5, `active` |
 | `sessions` | one per owner per `session_date` |
 | `session_players` | participants of a session |
 | `session_matches` | ordered (`position`) matches, four distinct players, `locked`, `played`, `notes` |

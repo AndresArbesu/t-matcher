@@ -99,12 +99,17 @@ afterEach(() => {
 it("stacks navigation and header controls on narrow screens", async () => {
   render(<Home />)
   const tabs = await screen.findByRole("tablist")
-  expect(tabs.className).toContain("grid-cols-1")
-  expect(tabs.className).toContain("sm:grid-cols-3")
+  // three short tabs share one row even at 320px instead of stacking into three tall rows
+  expect(tabs.className).toContain("grid-cols-3")
+  expect(tabs.className).not.toContain("grid-cols-1")
   const heading = screen.getByRole("heading", { level: 1 })
   expect(heading.parentElement?.className).toContain("flex-col")
   expect(heading.parentElement?.className).toContain("sm:flex-row")
-  expect(screen.getByLabelText(/Nombre del Jugador/).closest(".grid")?.className).toContain("grid-cols-[minmax(0,1fr)_5rem]")
+  // the add-player form is a single column on phones, with a full-width submit
+  const form = screen.getByLabelText(/Nombre del Jugador/).closest("form")!
+  expect(form.className).toContain("grid-cols-1")
+  expect(form.className).toContain("sm:flex")
+  expect(within(form).getByRole("button", { name: "Agregar Jugador" }).className).toContain("w-full")
 })
 
 async function openEnglish() {
@@ -180,11 +185,11 @@ describe("persistent session draft", () => {
 
   it("selects participants, generates, locks, regenerates and saves with positions and locks", async () => {
     await generateWithLock()
-    const first = screen.getAllByText(/^Match 1$/)[0].closest("div.p-4")!
+    const first = screen.getAllByText(/^Match 1$/)[0].closest("div.p-3")!
     const lockedBefore = within(first as HTMLElement).getAllByText(/Player \d/).map((n) => n.textContent)
 
     fireEvent.click(screen.getAllByText("Regenerate with Fixed Matches")[0])
-    const lockedAfter = within(screen.getAllByText(/^Match 1$/)[0].closest("div.p-4") as HTMLElement)
+    const lockedAfter = within(screen.getAllByText(/^Match 1$/)[0].closest("div.p-3") as HTMLElement)
       .getAllByText(/Player \d/)
       .map((n) => n.textContent)
     expect(lockedAfter).toEqual(lockedBefore)
@@ -258,11 +263,12 @@ describe("recording played matches", () => {
     fireEvent.click(screen.getByText("Mark as played"))
     await waitFor(() => expect(backend.calls.some((c) => c.method === "PATCH" && c.body.played === true && c.body.notes === "tight")).toBe(true))
     await screen.findByText("Played")
+    expect(screen.getByText("1 of 1 played")).toBeTruthy()
 
     fireEvent.mouseDown(screen.getByRole("tab", { name: "Match History" }))
     await screen.findByText(/Match History \(1 match\)/)
     fireEvent.mouseDown(screen.getByRole("tab", { name: "Players & Suggestions" }))
-    await screen.findByText(/Based on 1 historical matches/)
+    await screen.findByText(/Based on 1 historical match$/)
   })
 
   it("tells the user to save a schedule first when nothing is saved", async () => {
@@ -311,11 +317,77 @@ describe("browser-found corrections", () => {
     expect(text).not.toMatch(/\+200\b|\+100\b|\+50\b|Puntuación 2\b/)
   })
 
-  it("offers skill 1-10 to match the API", async () => {
+  it("offers skill levels 1 to 5 only, and adds the chosen level", async () => {
     await openEnglish()
-    const input = (await screen.findByLabelText(/Skill Level/)) as HTMLInputElement
-    expect(screen.getByText("Skill Level (1-10)")).toBeTruthy()
-    expect(input.max).toBe("10")
+    const group = await screen.findByRole("radiogroup", { name: "Skill Level (1-5)" })
+    const radios = within(group).getAllByRole("radio")
+    expect(radios.map((r) => r.textContent)).toEqual(["1", "2", "3", "4", "5"])
+    expect(radios.find((r) => r.getAttribute("aria-checked") === "true")?.textContent).toBe("3")
+    expect(screen.queryByText(/1-10/)).toBeNull()
+    for (const r of radios) expect(r.className).toContain("min-h-11")
+    fireEvent.click(radios[4])
+    fireEvent.change(screen.getByLabelText("Player Name"), { target: { value: "Newbie" } })
+    fireEvent.click(screen.getByText("Add Player"))
+    await screen.findByText("All Players (9)")
+    expect(backend.calls.find((c) => c.method === "POST")!.body).toEqual({ name: "Newbie", skill_level: 5 })
+  })
+
+  it("adds a player with Enter and resets the form", async () => {
+    await openEnglish()
+    await screen.findByText("All Players (8)")
+    const name = screen.getByLabelText("Player Name") as HTMLInputElement
+    fireEvent.change(name, { target: { value: "Kim" } })
+    fireEvent.submit(name.closest("form")!)
+    await screen.findByText("All Players (9)")
+    expect(name.value).toBe("")
+  })
+
+  it("says what is missing once, not in the header, the body and a hint", async () => {
+    await openEnglish()
+    await screen.findByText("All Players (8)")
+    expect(screen.getAllByText(/at least 4 players/i)).toHaveLength(1)
+    for (let i = 0; i < 5; i++) fireEvent.click(screen.getAllByRole("checkbox")[i])
+    expect(screen.getAllByText(/multiple of 4/i)).toHaveLength(1)
+  })
+
+  it("shows the lock hint only once there is a schedule, and keeps the long scoring text collapsed", async () => {
+    await openEnglish()
+    await screen.findByText("All Players (8)")
+    expect(screen.queryByText(/Tick a match to lock it/)).toBeNull()
+    fireEvent.click(screen.getByText("Select All"))
+    fireEvent.click(screen.getByText("Generate Suggestions"))
+    await screen.findAllByText(/Tick a match to lock it/)
+    expect(screen.getAllByText(/Tick a match to lock it/)).toHaveLength(1)
+    const details = screen.getByText(/How the Algorithm Works/).closest("details")!
+    expect(details.open).toBe(false)
+  })
+
+  it("ranks the offered schedules and lays out each match for a 320px screen", async () => {
+    await openEnglish()
+    await screen.findByText("All Players (8)")
+    fireEvent.click(screen.getByText("Select All"))
+    const generate = screen.getByText("Generate Suggestions")
+    expect(generate.className).toContain("w-full")
+    fireEvent.click(generate)
+    await screen.findAllByLabelText("Lock match 1")
+    const headings = screen.getAllByRole("heading", { level: 3 }).map((h) => h.textContent ?? "")
+    expect(headings.some((h) => h.startsWith("#1 "))).toBe(true)
+    const header = screen.getAllByText(/^Match 1$/)[0].closest("div.p-3")!.firstElementChild as HTMLElement
+    expect(header.className).toContain("flex-wrap")
+    const lock = screen.getAllByLabelText("Lock match 1")[0] as HTMLInputElement
+    expect(lock.className).toContain("w-5")
+    expect(lock.closest("label")!.className).toContain("min-h-11")
+    const save = screen.getAllByText("Save Schedule")[0]
+    expect(save.className).toContain("w-full")
+    expect(save.className).toContain("sm:w-auto")
+  })
+
+  it("makes attendance rows full-width touch targets", async () => {
+    await openEnglish()
+    await screen.findByText("All Players (8)")
+    const box = screen.getAllByRole("checkbox")[0]
+    expect(box.closest("label")!.className).toContain("min-h-12")
+    expect((screen.getByLabelText("Session date") as HTMLInputElement).className).toContain("w-full")
   })
 
   it("localizes the history tab and shows a date-only session date exactly, in any timezone", async () => {
@@ -325,6 +397,7 @@ describe("browser-found corrections", () => {
       backend.history = [historyRow]
       await openSpanish()
       await screen.findByText("Todos los Jugadores (8)")
+      await screen.findByText("Basado en 1 partido histórico")
       fireEvent.mouseDown(screen.getByRole("tab", { name: "Historial de Partidos" }))
       const card = (await screen.findByText(/Historial de Partidos \(1/)).closest("[data-slot=card]")!
       const text = card.textContent!

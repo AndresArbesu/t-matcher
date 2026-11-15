@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useState, type FormEvent } from "react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
@@ -14,6 +14,10 @@ import { hydrateDraft, regenerateUnlocked, toDraftPayload, withLocks, type Draft
 import { MatchAnalyzer } from "@/lib/match-analyzer"
 import { translations } from "@/lib/translations"
 import type { MatchHistory, Player, SavedMatch, SavedSession } from "@/lib/types"
+import { MAX_SKILL, MIN_SKILL } from "@/lib/validation"
+
+const SKILL_LEVELS = Array.from({ length: MAX_SKILL - MIN_SKILL + 1 }, (_, i) => MIN_SKILL + i)
+const DEFAULT_SKILL = 3
 
 interface SchedulerProps {
   language: "en" | "es"
@@ -37,7 +41,7 @@ export function Scheduler({ language, isDarkMode }: SchedulerProps) {
   const [baseState, setBaseState] = useState<"loading" | "ready" | "error">("loading")
   const [baseError, setBaseError] = useState<string>("")
   const [newPlayerName, setNewPlayerName] = useState("")
-  const [newPlayerSkill, setNewPlayerSkill] = useState(3)
+  const [newPlayerSkill, setNewPlayerSkill] = useState(DEFAULT_SKILL)
 
   const [sessionDate, setSessionDate] = useState(todayLocal)
   const [sessionState, setSessionState] = useState<"loading" | "ready" | "error">("loading")
@@ -108,14 +112,15 @@ export function Scheduler({ language, isDarkMode }: SchedulerProps) {
   const activePlayers = players.filter((p) => p.active)
   const visibleForSelection = players.filter((p) => p.active || selectedPlayers.has(p.id))
 
-  const addPlayer = async () => {
+  const addPlayer = async (event: FormEvent) => {
+    event.preventDefault()
     if (!newPlayerName.trim()) return
     setNotice(null)
     try {
       const player = await api.createPlayer({ name: newPlayerName.trim(), skill_level: newPlayerSkill })
       setPlayers((current) => [...current, player])
       setNewPlayerName("")
-      setNewPlayerSkill(3)
+      setNewPlayerSkill(DEFAULT_SKILL)
     } catch (error) {
       fail(error)
     }
@@ -260,6 +265,9 @@ export function Scheduler({ language, isDarkMode }: SchedulerProps) {
     ? "text-slate-300 data-[state=active]:bg-slate-700 data-[state=active]:text-slate-100"
     : "text-slate-700 data-[state=active]:bg-white data-[state=active]:text-slate-900"
 
+  // Three columns even at 320px: labels wrap to two lines rather than stacking into three tall rows
+  const tabTriggerClass = `${tabClass} min-h-11 min-w-0 whitespace-normal px-1 text-xs leading-tight sm:px-2 sm:text-sm`
+
   const outlineButton = isDarkMode
     ? "bg-slate-700 border-slate-600 text-slate-100 hover:bg-slate-600"
     : "bg-white border-slate-300 text-slate-900 hover:bg-slate-50"
@@ -285,26 +293,17 @@ export function Scheduler({ language, isDarkMode }: SchedulerProps) {
 
       <Tabs defaultValue="players" className="space-y-6">
         <TabsList
-          className={`grid h-auto w-full grid-cols-1 gap-1 sm:grid-cols-3 ${
+          className={`grid h-auto w-full grid-cols-3 gap-1 ${
             isDarkMode ? "bg-slate-800 border-slate-600" : "bg-slate-100 border-slate-200"
           }`}
         >
-          <TabsTrigger
-            value="players"
-            className={`${tabClass} min-w-0 whitespace-normal`}
-          >
+          <TabsTrigger value="players" className={tabTriggerClass}>
             {t.playersAndSuggestions}
           </TabsTrigger>
-          <TabsTrigger
-            value="record"
-            className={`${tabClass} min-w-0 whitespace-normal`}
-          >
+          <TabsTrigger value="record" className={tabTriggerClass}>
             {t.recordMatch}
           </TabsTrigger>
-          <TabsTrigger
-            value="history"
-            className={`${tabClass} min-w-0 whitespace-normal`}
-          >
+          <TabsTrigger value="history" className={tabTriggerClass}>
             {t.matchHistory}
           </TabsTrigger>
         </TabsList>
@@ -318,7 +317,7 @@ export function Scheduler({ language, isDarkMode }: SchedulerProps) {
               </CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="grid grid-cols-[minmax(0,1fr)_5rem] gap-3 mb-4 sm:flex sm:gap-4">
+              <form onSubmit={addPlayer} className="grid grid-cols-1 gap-3 mb-4 sm:flex sm:items-end sm:gap-4">
                 <div className="min-w-0 sm:flex-1">
                   <Label htmlFor="playerName" className={isDarkMode ? "text-slate-200" : "text-slate-700"}>
                     {t.playerName}
@@ -335,45 +334,53 @@ export function Scheduler({ language, isDarkMode }: SchedulerProps) {
                     }
                   />
                 </div>
-                <div className="min-w-0 sm:w-32">
-                  <Label htmlFor="skillLevel" className={isDarkMode ? "text-slate-200" : "text-slate-700"}>
+                <div className="min-w-0">
+                  <span id="skillLevelLabel" className={`text-sm font-medium ${isDarkMode ? "text-slate-200" : "text-slate-700"}`}>
                     {t.skillLevel}
-                  </Label>
-                  <Input
-                    id="skillLevel"
-                    type="number"
-                    min="1"
-                    max="10"
-                    value={newPlayerSkill}
-                    onChange={(e) => setNewPlayerSkill(Number.parseInt(e.target.value))}
-                    className={
-                      isDarkMode
-                        ? "bg-slate-700 border-slate-600 text-slate-100"
-                        : "bg-white border-slate-300 text-slate-900"
-                    }
-                  />
+                  </span>
+                  <div role="radiogroup" aria-labelledby="skillLevelLabel" className="mt-2 grid grid-cols-5 gap-1.5 sm:flex">
+                    {SKILL_LEVELS.map((level) => {
+                      const on = level === newPlayerSkill
+                      return (
+                        <button
+                          key={level}
+                          type="button"
+                          role="radio"
+                          aria-checked={on}
+                          onClick={() => setNewPlayerSkill(level)}
+                          className={`min-h-11 rounded-md border text-sm font-medium sm:min-w-11 ${
+                            on
+                              ? "bg-blue-600 border-blue-600 text-white"
+                              : isDarkMode
+                                ? "bg-slate-700 border-slate-600 text-slate-100 hover:bg-slate-600"
+                                : "bg-white border-slate-300 text-slate-900 hover:bg-slate-50"
+                          }`}
+                        >
+                          {level}
+                        </button>
+                      )
+                    })}
+                  </div>
                 </div>
-                <div className="col-span-2 flex items-end sm:col-auto">
-                  <Button onClick={addPlayer} className="w-full bg-blue-600 hover:bg-blue-700 text-white sm:w-auto">
-                    {t.addPlayer}
-                  </Button>
-                </div>
-              </div>
+                <Button type="submit" className="w-full min-h-11 bg-blue-600 hover:bg-blue-700 text-white sm:w-auto">
+                  {t.addPlayer}
+                </Button>
+              </form>
 
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2">
                 {activePlayers.map((player) => (
                   <div
                     key={player.id}
-                    className={`flex items-center justify-between p-2 border rounded ${
+                    className={`flex items-center justify-between gap-2 p-2 border rounded ${
                       isDarkMode
                         ? "bg-slate-700 border-slate-600 text-slate-100"
                         : "bg-white border-slate-200 text-slate-900"
                     }`}
                   >
-                    <span>
+                    <span className="min-w-0 break-words">
                       {player.name} ({t.skillLevel.split(" ")[0]}: {player.skill_level})
                     </span>
-                    <Button variant="destructive" size="sm" onClick={() => removePlayer(player.id)}>
+                    <Button variant="destructive" size="sm" className="min-h-10" onClick={() => removePlayer(player.id)}>
                       {t.remove}
                     </Button>
                   </div>
@@ -388,8 +395,8 @@ export function Scheduler({ language, isDarkMode }: SchedulerProps) {
               <CardTitle className={isDarkMode ? "text-slate-100" : "text-slate-900"}>
                 {t.selectPlayersWeek} ({selectedPlayers.size} {t.selected})
               </CardTitle>
-              <div className="flex flex-wrap items-end gap-2">
-                <div>
+              <div className="grid grid-cols-2 items-end gap-2 sm:flex sm:flex-wrap">
+                <div className="col-span-2 sm:col-auto">
                   <Label htmlFor="sessionDate" className={isDarkMode ? "text-slate-200" : "text-slate-700"}>
                     {t.sessionDate}
                   </Label>
@@ -398,30 +405,33 @@ export function Scheduler({ language, isDarkMode }: SchedulerProps) {
                     type="date"
                     value={sessionDate}
                     onChange={(e) => e.target.value && setSessionDate(e.target.value)}
-                    className={
+                    className={`w-full min-h-11 sm:w-auto ${
                       isDarkMode
                         ? "bg-slate-700 border-slate-600 text-slate-100"
                         : "bg-white border-slate-300 text-slate-900"
-                    }
+                    }`}
                   />
                 </div>
-                <Button variant="outline" size="sm" onClick={selectAllPlayers} className={outlineButton}>
+                <Button variant="outline" onClick={selectAllPlayers} className={`min-h-11 ${outlineButton}`}>
                   {t.selectAll}
                 </Button>
-                <Button variant="outline" size="sm" onClick={clearAllSelections} className={outlineButton}>
+                <Button variant="outline" onClick={clearAllSelections} className={`min-h-11 ${outlineButton}`}>
                   {t.clearAll}
                 </Button>
                 <Button
                   variant="outline"
-                  size="sm"
                   disabled={isSaving || sessionState !== "ready"}
                   onClick={() => void saveSession([], "selectionSaved")}
-                  className={outlineButton}
+                  className={`col-span-2 min-h-11 sm:col-auto ${outlineButton}`}
                 >
                   {isSaving ? t.saving : t.saveSelection}
                 </Button>
                 {sessionState === "error" && (
-                  <Button variant="outline" size="sm" onClick={() => setSessionReload((n) => n + 1)} className={outlineButton}>
+                  <Button
+                    variant="outline"
+                    onClick={() => setSessionReload((n) => n + 1)}
+                    className={`col-span-2 min-h-11 sm:col-auto ${outlineButton}`}
+                  >
                     {t.retry}
                   </Button>
                 )}
@@ -431,23 +441,11 @@ export function Scheduler({ language, isDarkMode }: SchedulerProps) {
               )}
             </CardHeader>
             <CardContent>
-              <div className="mb-4">
-                <div
-                  className={`p-3 rounded text-sm ${
-                    isDarkMode ? "bg-blue-900/30 text-blue-200" : "bg-blue-50 text-blue-800"
-                  }`}
-                >
-                  {language === "en"
-                    ? "Check the box next to any match to fix it in place. When you regenerate, fixed matches will stay the same while remaining players get reshuffled."
-                    : "Marca la casilla junto a cualquier partido para fijarlo en su lugar. Cuando regeneres, los partidos fijos permanecerán igual mientras que los jugadores restantes se mezclarán."}
-                </div>
-              </div>
-
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2">
                 {visibleForSelection.map((player) => (
-                  <div
+                  <label
                     key={player.id}
-                    className={`flex items-center gap-3 p-3 border rounded cursor-pointer transition-colors ${
+                    className={`flex min-h-12 items-center gap-3 p-3 border rounded cursor-pointer transition-colors ${
                       selectedPlayers.has(player.id)
                         ? isDarkMode
                           ? "bg-blue-900/50 border-blue-600 text-slate-100"
@@ -456,37 +454,20 @@ export function Scheduler({ language, isDarkMode }: SchedulerProps) {
                           ? "bg-slate-700 border-slate-600 text-slate-100 hover:bg-slate-600"
                           : "bg-white border-slate-200 text-slate-900 hover:bg-slate-50"
                     }`}
-                    onClick={() => togglePlayerSelection(player.id)}
                   >
                     <input
                       type="checkbox"
                       checked={selectedPlayers.has(player.id)}
                       onChange={() => togglePlayerSelection(player.id)}
-                      onClick={(e) => e.stopPropagation()}
-                      className="w-4 h-4"
+                      className="h-5 w-5 shrink-0"
                     />
-                    <span className={selectedPlayers.has(player.id) ? "font-medium" : ""}>
+                    <span className={`min-w-0 break-words ${selectedPlayers.has(player.id) ? "font-medium" : ""}`}>
                       {player.name} ({t.skillLevel.split(" ")[0]}: {player.skill_level})
                       {!player.active && ` – ${t.inactive}`}
                     </span>
-                  </div>
+                  </label>
                 ))}
               </div>
-              {selectedPlayers.size > 0 && (
-                <div
-                  className={`mt-4 p-3 rounded ${
-                    isDarkMode ? "bg-blue-900/50 text-blue-200" : "bg-blue-50 text-blue-800"
-                  }`}
-                >
-                  <p className="text-sm">
-                    <strong>{t.selectedPlayers}</strong>{" "}
-                    {players
-                      .filter((p) => selectedPlayers.has(p.id))
-                      .map((p) => p.name)
-                      .join(", ")}
-                  </p>
-                </div>
-              )}
             </CardContent>
           </Card>
 
@@ -496,20 +477,20 @@ export function Scheduler({ language, isDarkMode }: SchedulerProps) {
               <CardTitle className={isDarkMode ? "text-slate-100" : "text-slate-900"}>
                 {t.intelligentSuggestions}
               </CardTitle>
-              <div className="flex gap-2">
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-4">
                 <Button
                   onClick={generateSuggestions}
                   disabled={!canGenerate || isLoading}
-                  className={
+                  className={`w-full min-h-11 sm:w-auto ${
                     isDarkMode
                       ? "bg-blue-600 hover:bg-blue-700 text-white disabled:bg-slate-600"
                       : "bg-blue-600 hover:bg-blue-700 text-white"
-                  }
+                  }`}
                 >
                   {isLoading ? t.analyzing : t.generateSuggestions}
                 </Button>
-                <div className={`text-sm flex items-center ${isDarkMode ? "text-slate-400" : "text-slate-600"}`}>
-                  {t.basedOnMatches} {matchHistory.length} {t.historicalMatches}
+                <div className={`text-sm ${isDarkMode ? "text-slate-400" : "text-slate-600"}`}>
+                  {t.basedOnMatches} {matchHistory.length} {matchHistory.length === 1 ? t.historicalMatch : t.historicalMatches}
                 </div>
               </div>
               {selectedPlayers.size < 4 && (
@@ -520,33 +501,33 @@ export function Scheduler({ language, isDarkMode }: SchedulerProps) {
               )}
             </CardHeader>
             <CardContent>
-              {selectedPlayers.size < 4 ? (
-                <p className={isDarkMode ? "text-slate-400" : "text-slate-600"}>{t.selectAtLeast4Generate}</p>
-              ) : selectedPlayers.size % 4 !== 0 ? (
-                <p className={isDarkMode ? "text-red-400" : "text-red-600"}>{t.playersNotMultipleOf4}</p>
-              ) : (
-                <div className="space-y-6">
+              {canGenerate && (
+                <div className="space-y-4 sm:space-y-6">
+                  {drafts.length > 0 && (
+                    <p className={`text-sm ${isDarkMode ? "text-slate-400" : "text-slate-600"}`}>{t.lockHint}</p>
+                  )}
                   {drafts.map((draft, draftIndex) => (
                     <div
                       key={draftIndex}
-                      className={`p-6 border-2 rounded-lg ${
+                      className={`p-3 sm:p-6 border-2 rounded-lg ${
                         isDarkMode ? "bg-slate-700 border-slate-500" : "bg-slate-50 border-slate-300"
                       }`}
                     >
-                      <div className="flex justify-between items-center mb-4">
+                      <div className="flex flex-wrap justify-between items-center gap-2 mb-3 sm:mb-4">
                         <h3 className={`text-lg font-bold ${isDarkMode ? "text-slate-100" : "text-slate-900"}`}>
-                          {language === "en" ? "Arrangement" : "Arreglo"} {draftIndex + 1}
+                          #{draftIndex + 1}
+                          {draftIndex === 0 && drafts.length > 1 && ` ${t.best}`}
                         </h3>
                         <Badge className={getScoreColor(draft.reduce((sum, m) => sum + m.totalScore, 0))}>
                           {t.score}: {draft.reduce((sum, m) => sum + m.totalScore, 0)}
                         </Badge>
                       </div>
 
-                      <div className="grid gap-4">
+                      <div className="grid gap-3 sm:gap-4">
                         {draft.map((match, matchIndex) => (
                           <div
                             key={matchIndex}
-                            className={`p-4 border rounded-lg ${
+                            className={`p-3 sm:p-4 border rounded-lg ${
                               match.locked
                                 ? isDarkMode
                                   ? "bg-green-900/20 border-green-600"
@@ -556,36 +537,37 @@ export function Scheduler({ language, isDarkMode }: SchedulerProps) {
                                   : "bg-white border-slate-200"
                             }`}
                           >
-                            <div className="flex justify-between items-center mb-3">
-                              <div className="flex items-center gap-3">
+                            <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 mb-2">
+                              <h4 className={`font-semibold ${isDarkMode ? "text-slate-100" : "text-slate-900"}`}>
+                                {t.match} {matchIndex + 1}
+                                {match.locked && (
+                                  <span
+                                    className={`ml-2 text-xs px-2 py-1 rounded font-bold ${
+                                      isDarkMode ? "bg-green-800 text-green-200" : "bg-green-100 text-green-800"
+                                    }`}
+                                  >
+                                    {t.fixedBadge}
+                                  </span>
+                                )}
+                              </h4>
+                              <label className="flex min-h-11 cursor-pointer items-center gap-2 text-sm">
                                 <input
                                   type="checkbox"
                                   aria-label={`${t.lockMatch} ${matchIndex + 1}`}
                                   checked={match.locked}
                                   onChange={() => toggleMatchLocked(draftIndex, matchIndex)}
-                                  className="w-4 h-4"
+                                  className="h-5 w-5"
                                 />
-                                <h4 className={`font-semibold ${isDarkMode ? "text-slate-100" : "text-slate-900"}`}>
-                                  {t.match} {matchIndex + 1}
-                                  {match.locked && (
-                                    <span
-                                      className={`ml-2 text-xs px-2 py-1 rounded font-bold ${
-                                        isDarkMode ? "bg-green-800 text-green-200" : "bg-green-100 text-green-800"
-                                      }`}
-                                    >
-                                      {language === "en" ? "FIXED" : "FIJO"}
-                                    </span>
-                                  )}
-                                </h4>
-                              </div>
-                              <div className={`text-sm ${isDarkMode ? "text-slate-400" : "text-slate-600"}`}>
-                                {t.skillDiff}: {match.skillDifference} | {t.last}:{" "}
-                                {formatDaysAgo(match.analysis?.lastPlayedDays ?? -1)}
-                              </div>
+                                {t.lockShort}
+                              </label>
                             </div>
+                            <p className={`mb-3 text-sm ${isDarkMode ? "text-slate-400" : "text-slate-600"}`}>
+                              {t.skillDiff}: {match.skillDifference} | {t.last}:{" "}
+                              {formatDaysAgo(match.analysis?.lastPlayedDays ?? -1)}
+                            </p>
 
-                            <div className="grid grid-cols-2 gap-4">
-                              <div>
+                            <div className="grid grid-cols-2 gap-3 sm:gap-4">
+                              <div className="min-w-0 break-words">
                                 <h5 className={`font-medium ${isDarkMode ? "text-blue-400" : "text-blue-600"}`}>
                                   {t.team1}
                                 </h5>
@@ -598,7 +580,7 @@ export function Scheduler({ language, isDarkMode }: SchedulerProps) {
                                   {t.total}: {match.team1[0].skill_level + match.team1[1].skill_level}
                                 </p>
                               </div>
-                              <div>
+                              <div className="min-w-0 break-words">
                                 <h5 className={`font-medium ${isDarkMode ? "text-red-400" : "text-red-600"}`}>
                                   {t.team2}
                                 </h5>
@@ -616,20 +598,20 @@ export function Scheduler({ language, isDarkMode }: SchedulerProps) {
                         ))}
                       </div>
 
-                      <div className="mt-4 pt-4 border-t border-slate-600 flex flex-wrap gap-2">
+                      <div className="mt-4 pt-4 border-t border-slate-600 flex flex-col gap-2 sm:flex-row sm:flex-wrap">
                         {draft.some((m) => m.locked) && (
                           <Button
                             onClick={() => regenerateWithFixedMatches(draftIndex)}
                             disabled={isLoading}
-                            className="bg-green-600 hover:bg-green-700 text-white"
+                            className="h-auto min-h-11 w-full whitespace-normal bg-green-600 text-white hover:bg-green-700 sm:w-auto"
                           >
-                            {language === "en" ? "Regenerate with Fixed Matches" : "Regenerar con Partidos Fijos"}
+                            {t.regenerate}
                           </Button>
                         )}
                         <Button
                           onClick={() => void saveSession(draft, "scheduleSaved")}
                           disabled={isSaving || sessionState !== "ready"}
-                          className="bg-blue-600 hover:bg-blue-700 text-white disabled:bg-slate-600"
+                          className="min-h-11 w-full bg-blue-600 text-white hover:bg-blue-700 disabled:bg-slate-600 sm:w-auto"
                         >
                           {isSaving ? t.saving : t.saveSchedule}
                         </Button>
@@ -642,11 +624,14 @@ export function Scheduler({ language, isDarkMode }: SchedulerProps) {
           </Card>
 
           {/* Algorithm Explanation */}
-          <Card className={isDarkMode ? "bg-slate-800 border-slate-600" : "bg-white border-slate-200"}>
-            <CardHeader>
-              <CardTitle className={isDarkMode ? "text-slate-100" : "text-slate-900"}>{t.howAlgorithmWorks}</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-4">
+          <Card className={`py-0 ${isDarkMode ? "bg-slate-800 border-slate-600 text-slate-100" : "bg-white border-slate-200"}`}>
+            <details className="group">
+            <summary
+              className={`flex min-h-12 cursor-pointer items-center px-6 font-semibold ${isDarkMode ? "text-slate-100" : "text-slate-900"}`}
+            >
+              {t.howAlgorithmWorks}
+            </summary>
+            <CardContent className="space-y-4 pb-6">
               <div>
                 <h4 className={`font-semibold mb-2 ${isDarkMode ? "text-green-400" : "text-green-600"}`}>
                   {t.scoringSystem}
@@ -700,6 +685,7 @@ export function Scheduler({ language, isDarkMode }: SchedulerProps) {
                 <p className="text-sm mt-2">{t.samplingDesc}</p>
               </div>
             </CardContent>
+            </details>
           </Card>
         </TabsContent>
 

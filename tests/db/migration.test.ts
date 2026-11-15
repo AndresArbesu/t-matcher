@@ -1,6 +1,6 @@
 import type { PGlite } from "@electric-sql/pglite"
 import { beforeEach, describe, expect, it } from "vitest"
-import { A, B, addPlayers, as, freshDb, migrationSql, saveDraft } from "./harness"
+import { A, B, addPlayers, as, baseDb, freshDb, migrationSql, saveDraft, skillMigrationSql } from "./harness"
 
 let db: PGlite
 beforeEach(async () => {
@@ -63,12 +63,19 @@ describe("players", () => {
     const bad = (name: string, skill: number) =>
       as(db, A, () => db.query(`insert into players (name, skill_level) values ($1, $2)`, [name, skill]))
     await rejects(bad("Ana", 0), /check constraint/)
-    await rejects(bad("Ana", 11), /check constraint/)
+    await rejects(bad("Ana", 6), /check constraint/)
+    await rejects(bad("Ana", 10), /check constraint/)
     await rejects(bad("", 3), /check constraint/)
     await rejects(bad(" Ana", 3), /check constraint/)
+    for (const skill of [1, 2, 4, 5]) await bad(`Level ${skill}`, skill)
     await bad("Ana", 3)
     await rejects(bad("ANA", 3), /duplicate key/)
     await as(db, B, () => db.query(`insert into players (name, skill_level) values ('Ana', 3)`))
+  })
+
+  it("rejects raising an existing player above 5", async () => {
+    const [a1] = await addPlayers(db, A, ["Ana"], 5)
+    await rejects(as(db, A, () => db.query(`update players set skill_level = 6 where id = $1`, [a1])), /check constraint/)
   })
 
   it("can be soft-deactivated but not deleted", async () => {
@@ -202,6 +209,44 @@ describe("history is preserved", () => {
     for (const t of ["players", "sessions", "session_players", "session_matches"]) {
       expect((await db.query(`select 1 from ${t}`)).rows).toHaveLength(0)
     }
+  })
+})
+
+describe("skill 1..5 forward migration", () => {
+  const playerRows = (d: PGlite) => d.query<{ name: string; skill_level: number }>(`select name, skill_level from players order by name`)
+
+  it("keeps every existing player and limits skill to 1..5 when nothing is above 5", async () => {
+    const old = await baseDb()
+    await old.exec(`insert into players (owner_id, name, skill_level) values ('${A}', 'Ana', 5), ('${A}', 'Bo', 1), ('${B}', 'Cy', 3)`)
+    await old.exec(skillMigrationSql())
+    expect((await playerRows(old)).rows).toEqual([
+      { name: "Ana", skill_level: 5 },
+      { name: "Bo", skill_level: 1 },
+      { name: "Cy", skill_level: 3 },
+    ])
+    await rejects(old.exec(`insert into players (owner_id, name, skill_level) values ('${A}', 'Dee', 6)`), /check constraint/)
+  })
+
+  it("aborts with an explanation and changes nothing when a player is above 5", async () => {
+    const old = await baseDb()
+    await old.exec(`insert into players (owner_id, name, skill_level) values ('${A}', 'Ana', 8), ('${A}', 'Bo', 3)`)
+    await rejects(old.exec(skillMigrationSql()), /above 5/)
+    expect((await playerRows(old)).rows).toEqual([
+      { name: "Ana", skill_level: 8 },
+      { name: "Bo", skill_level: 3 },
+    ])
+    // the old constraint is still the one in force after the abort
+    await old.exec(`insert into players (owner_id, name, skill_level) values ('${A}', 'Cy', 9)`)
+  })
+
+  it("can be applied twice", async () => {
+    await db.exec(skillMigrationSql())
+    await rejects(db.exec(`insert into players (owner_id, name, skill_level) values ('${A}', 'Dee', 6)`), /check constraint/)
+  })
+
+  it("only swaps the check constraint: no data writes, grants or policies", () => {
+    const sql = skillMigrationSql().replace(/--.*$/gm, "")
+    expect(sql).not.toMatch(/\b(grant|revoke|policy|drop\s+table|truncate|delete\s+from|update\s+(public\.)?players)\b/i)
   })
 })
 

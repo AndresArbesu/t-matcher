@@ -10,6 +10,9 @@ import {
 const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`
 
 describe("parsePlayerCreate", () => {
+  it("accepts every skill from 1 to 5", () => {
+    for (const skill_level of [1, 2, 3, 4, 5]) expect(parsePlayerCreate({ name: "Ana", skill_level }).ok).toBe(true)
+  })
   it("trims the name and accepts an integer skill", () => {
     expect(parsePlayerCreate({ name: "  Ana ", skill_level: 3 })).toEqual({
       ok: true,
@@ -21,6 +24,8 @@ describe("parsePlayerCreate", () => {
     [{ name: "   ", skill_level: 3 }],
     [{ name: "x".repeat(81), skill_level: 3 }],
     [{ name: "Ana", skill_level: 0 }],
+    [{ name: "Ana", skill_level: 6 }],
+    [{ name: "Ana", skill_level: 10 }],
     [{ name: "Ana", skill_level: 11 }],
     [{ name: "Ana", skill_level: 2.5 }],
     [{ name: "Ana", skill_level: "3" }],
@@ -48,6 +53,8 @@ describe("parsePlayerPatch", () => {
     expect(parsePlayerPatch({}).ok).toBe(false)
     expect(parsePlayerPatch({ active: "no" }).ok).toBe(false)
     expect(parsePlayerPatch({ skill_level: 99 }).ok).toBe(false)
+    expect(parsePlayerPatch({ skill_level: 6 }).ok).toBe(false)
+    expect(parsePlayerPatch({ skill_level: 5 }).ok).toBe(true)
   })
 })
 
