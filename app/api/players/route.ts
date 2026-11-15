@@ -1,46 +1,13 @@
-import { type NextRequest, NextResponse } from "next/server"
-import { createClient } from "@/lib/supabase/server"
+import { NextResponse } from "next/server"
+import { ApiError } from "@/lib/api/errors"
+import { authed, readJson } from "@/lib/api/handler"
+import { createPlayer, listPlayers } from "@/lib/repo"
+import { parsePlayerCreate } from "@/lib/validation"
 
-export async function GET() {
-  try {
-    const supabase = await createClient()
-    const { data, error } = await supabase.from("players").select("*").order("name")
+export const GET = authed(async ({ supabase }) => NextResponse.json(await listPlayers(supabase)))
 
-    if (error) {
-      console.error("Database error:", error)
-      return NextResponse.json({ error: error.message }, { status: 500 })
-    }
-
-    return NextResponse.json(data)
-  } catch (error) {
-    console.error("API error:", error)
-    return NextResponse.json({ error: "Internal server error" }, { status: 500 })
-  }
-}
-
-export async function POST(request: NextRequest) {
-  try {
-    const { name, skill_level } = await request.json()
-
-    if (!name || !skill_level) {
-      return NextResponse.json({ error: "Name and skill level are required" }, { status: 400 })
-    }
-
-    const supabase = await createClient()
-    const { data, error } = await supabase
-      .from("players")
-      .insert([{ name: name.trim(), skill_level }])
-      .select()
-      .single()
-
-    if (error) {
-      console.error("Database error:", error)
-      return NextResponse.json({ error: error.message }, { status: 500 })
-    }
-
-    return NextResponse.json(data)
-  } catch (error) {
-    console.error("API error:", error)
-    return NextResponse.json({ error: "Internal server error" }, { status: 500 })
-  }
-}
+export const POST = authed(async ({ request, supabase }) => {
+  const parsed = parsePlayerCreate(await readJson(request))
+  if (!parsed.ok) throw new ApiError(400, "invalid_request")
+  return NextResponse.json(await createPlayer(supabase, parsed.value), { status: 201 })
+})
