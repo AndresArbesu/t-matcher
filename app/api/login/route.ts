@@ -3,11 +3,9 @@ import { ApiError } from "@/lib/api/errors"
 import { open, readJson } from "@/lib/api/handler"
 import {
   FAILED_LOGIN_DELAY_MS,
-  SESSION_COOKIE,
-  SESSION_MAX_AGE_S,
   passcodeMatches,
   resolvePasscode,
-  signSession,
+  sessionCookieHeader,
 } from "@/lib/auth"
 
 /** Exchanges the shared passcode for a signed, httpOnly session cookie. */
@@ -23,12 +21,6 @@ export const POST = open(async ({ request }) => {
   }
 
   const response = NextResponse.json({ ok: true })
-  response.cookies.set(SESSION_COOKIE, signSession(expected, Date.now() + SESSION_MAX_AGE_S * 1000), {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
-    sameSite: "lax",
-    path: "/",
-    maxAge: SESSION_MAX_AGE_S,
-  })
+  response.headers.append("Set-Cookie", sessionCookieHeader(expected))
   return response
 })

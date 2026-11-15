@@ -4,10 +4,12 @@ import { ApiError } from "@/lib/api/errors"
 import {
   SESSION_COOKIE,
   SESSION_MAX_AGE_S,
+  SESSION_VALID_FOR_MS,
   isAuthenticated,
   passcodeMatches,
   readCookie,
   resolvePasscode,
+  sessionCookieHeader,
   signSession,
   verifySession,
 } from "@/lib/auth"
@@ -18,9 +20,24 @@ const NOW = 1_800_000_000_000
 const hmac = (pass: string, exp: number) => createHmac("sha256", pass).update(`t-matcher-session-v1.${exp}`).digest("hex")
 
 describe("session cookie", () => {
-  it("is named tm_session and lives 180 days", () => {
+  it("is named tm_session; the browser copy lasts 400 days (the longest browsers keep) and the signature is valid for 10 years", () => {
     expect(SESSION_COOKIE).toBe("tm_session")
-    expect(SESSION_MAX_AGE_S).toBe(180 * 24 * 60 * 60)
+    expect(SESSION_MAX_AGE_S).toBe(400 * 24 * 60 * 60)
+    expect(SESSION_VALID_FOR_MS).toBe(10 * 365 * 24 * 60 * 60 * 1000)
+  })
+
+  it("builds a Set-Cookie header with a fresh 10-year signature and a 400-day lifetime", () => {
+    vi.stubEnv("NODE_ENV", "production")
+    const header = sessionCookieHeader("secret", NOW)
+    const value = /tm_session=([^;]+)/.exec(header)![1]
+    expect(value).toBe(signSession("secret", NOW + SESSION_VALID_FOR_MS))
+    expect(header).toMatch(/Max-Age=34560000/)
+    expect(header).toMatch(/HttpOnly/)
+    expect(header).toMatch(/SameSite=Lax/i)
+    expect(header).toMatch(/Path=\//)
+    expect(header).toMatch(/Secure/)
+    vi.stubEnv("NODE_ENV", "development")
+    expect(sessionCookieHeader("secret", NOW)).not.toMatch(/Secure/)
   })
 
   it("has the format <expiresAtMs>.<hex hmac-sha256 over the versioned message>", () => {

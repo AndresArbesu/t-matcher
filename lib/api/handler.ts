@@ -1,5 +1,5 @@
 import type { NextRequest } from "next/server"
-import { isAuthenticated } from "@/lib/auth"
+import { isAuthenticated, resolvePasscode, sessionCookieHeader } from "@/lib/auth"
 import type { DocStore } from "@/lib/store"
 import { getStore } from "@/lib/store-instance"
 import { ApiError, toErrorResponse } from "./errors"
@@ -69,7 +69,10 @@ export function authed<P extends Record<string, string> = Record<string, never>>
   return (request, route) =>
     respond(request, route, async (params) => {
       if (!isAuthenticated(request)) throw new ApiError(401, "unauthorized")
-      return handler({ request, store: getStore(), params })
+      const response = await handler({ request, store: getStore(), params })
+      // Sliding session: regular use keeps renewing the cookie, so nobody is logged out while the app is in use.
+      response.headers.append("Set-Cookie", sessionCookieHeader(resolvePasscode()))
+      return response
     })
 }
 
