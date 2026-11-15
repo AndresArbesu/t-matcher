@@ -96,6 +96,37 @@ describe("authentication", () => {
     expect(holder.getStore).not.toHaveBeenCalled()
   })
 
+  it("renews the session cookie on every authenticated call, so regular use never logs out", async () => {
+    vi.stubEnv("NODE_ENV", "development")
+    for (const call of [
+      () => whoamiRoute.GET(req("GET"), ctx()),
+      () => playersRoute.GET(req("GET"), ctx()),
+      () => historyRoute.GET(req("GET"), ctx()),
+      () => exportRoute.GET(req("GET"), ctx()),
+    ]) {
+      const res = await call()
+      expect(res.status).toBe(200)
+      const header = res.headers.get("set-cookie")!
+      expect(header).toMatch(/Max-Age=34560000/)
+      const value = decodeURIComponent(/tm_session=([^;]+)/.exec(header)![1])
+      expect(verifySession(value, PASS, Date.now())).toBe(true)
+      expect(Number(value.split(".")[0])).toBeGreaterThan(Date.now() + 9 * 365 * 86400_000)
+    }
+  })
+
+  it("never sets a cookie on a rejected call", async () => {
+    for (const [, call] of protectedCalls) {
+      expect((await call({ cookie: null })).headers.get("set-cookie")).toBeNull()
+    }
+  })
+
+  it("an old 180-day cookie keeps working until it expires, and is replaced by a long one", async () => {
+    const old = `${SESSION_COOKIE}=${signSession(PASS, Date.now() + 100 * 86400_000)}`
+    const res = await whoamiRoute.GET(req("GET", { cookie: old }), ctx())
+    expect(res.status).toBe(200)
+    expect(res.headers.get("set-cookie")).toMatch(/Max-Age=34560000/)
+  })
+
   it("GET /api/session is { ok: true } with a valid cookie", async () => {
     const res = await whoamiRoute.GET(req("GET"), ctx())
     expect(res.status).toBe(200)
@@ -117,13 +148,13 @@ describe("login", () => {
     expect(header).toMatch(/HttpOnly/i)
     expect(header).toMatch(/SameSite=lax/i)
     expect(header).toMatch(/Path=\//)
-    expect(header).toMatch(/Max-Age=15552000/)
+    expect(header).toMatch(/Max-Age=34560000/)
     expect(header).not.toMatch(/Secure/i)
     const value = decodeURIComponent(/tm_session=([^;]+)/.exec(header)![1])
     expect(verifySession(value, PASS, Date.now())).toBe(true)
     const expiresAt = Number(value.split(".")[0])
-    expect(expiresAt).toBeGreaterThanOrEqual(before + 180 * 86400_000)
-    expect(expiresAt).toBeLessThanOrEqual(Date.now() + 180 * 86400_000)
+    expect(expiresAt).toBeGreaterThanOrEqual(before + 10 * 365 * 86400_000)
+    expect(expiresAt).toBeLessThanOrEqual(Date.now() + 10 * 365 * 86400_000)
   })
 
   it("marks the cookie Secure in production", async () => {
