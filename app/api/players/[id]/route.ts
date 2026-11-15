@@ -1,20 +1,23 @@
-import { type NextRequest, NextResponse } from "next/server"
-import { createClient } from "@/lib/supabase/server"
+import { NextResponse } from "next/server"
+import { ApiError } from "@/lib/api/errors"
+import { authed, readJson } from "@/lib/api/handler"
+import { updatePlayer } from "@/lib/repo"
+import { parsePlayerPatch, parseUuid } from "@/lib/validation"
 
-export async function DELETE(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-  try {
-    const { id } = await params
-    const supabase = await createClient()
-    const { error } = await supabase.from("players").delete().eq("id", id)
+export const PATCH = authed<{ id: string }>(async ({ request, supabase, params }) => {
+  const id = parseUuid(params.id)
+  const parsed = parsePlayerPatch(await readJson(request))
+  if (!id || !parsed.ok) throw new ApiError(400, "invalid_request")
+  const player = await updatePlayer(supabase, id, parsed.value)
+  if (!player) throw new ApiError(404, "not_found")
+  return NextResponse.json(player)
+})
 
-    if (error) {
-      console.error("Database error:", error)
-      return NextResponse.json({ error: error.message }, { status: 500 })
-    }
-
-    return NextResponse.json({ success: true })
-  } catch (error) {
-    console.error("API error:", error)
-    return NextResponse.json({ error: "Internal server error" }, { status: 500 })
-  }
-}
+/** Players are never hard-deleted: history keeps referring to them. DELETE deactivates. */
+export const DELETE = authed<{ id: string }>(async ({ supabase, params }) => {
+  const id = parseUuid(params.id)
+  if (!id) throw new ApiError(400, "invalid_request")
+  const player = await updatePlayer(supabase, id, { active: false })
+  if (!player) throw new ApiError(404, "not_found")
+  return NextResponse.json(player)
+})

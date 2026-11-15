@@ -7,9 +7,8 @@ const _geist = Geist({ subsets: ["latin"] });
 const _geistMono = Geist_Mono({ subsets: ["latin"] });
 
 export const metadata: Metadata = {
-  title: 'v0 App',
-  description: 'Created with v0',
-  generator: 'v0.app',
+  title: 't-matcher',
+  description: 'Organiza partidos de dobles con equipos equilibrados y variedad de rivales.',
   icons: {
     icon: [
       {
