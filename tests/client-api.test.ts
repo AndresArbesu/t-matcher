@@ -43,12 +43,19 @@ describe("client api", () => {
     await api.setPlayed("m1", { played: true, notes: "n" })
     await api.deactivatePlayer("p1")
     await api.listHistory()
+    await api.checkSession()
+    await api.login("pw")
+    await api.logout()
     expect(fetchMock.mock.calls.map(([u, i]) => `${i?.method ?? "GET"} ${u}`)).toEqual([
       "GET /api/sessions/2026-11-15",
       "PUT /api/sessions/2026-11-15",
       "PATCH /api/matches/m1",
       "DELETE /api/players/p1",
       "GET /api/history",
+      "GET /api/session",
+      "POST /api/login",
+      "POST /api/logout",
     ])
+    expect(JSON.parse(fetchMock.mock.calls[6][1].body)).toEqual({ passcode: "pw" })
   })
 })

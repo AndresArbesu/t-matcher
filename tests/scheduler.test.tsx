@@ -3,14 +3,6 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { MatchHistory, Player, SavedSession } from "@/lib/types"
 
-const { authMock } = vi.hoisted(() => ({ authMock: { current: null as unknown } }))
-vi.mock("@/lib/supabase/client", () => ({
-  createClient: () => {
-    if (!authMock.current) throw new Error("Missing env")
-    return { auth: authMock.current }
-  },
-}))
-
 import Home from "@/app/page"
 
 const players: Player[] = Array.from({ length: 8 }, (_, i) => ({
@@ -21,6 +13,7 @@ const players: Player[] = Array.from({ length: 8 }, (_, i) => ({
 }))
 
 interface Backend {
+  authed: boolean
   players: Player[]
   session: SavedSession | null
   history: MatchHistory[]
@@ -40,6 +33,18 @@ function installFetch() {
       const key = `${method} ${url.replace(/\d{4}-\d{2}-\d{2}/, ":date")}`
       const respond = (status: number, data: unknown) => new Response(JSON.stringify(data), { status })
       if (backend.fail[key]) return respond(backend.fail[key].status, { error: backend.fail[key].error })
+
+      if (key === "GET /api/session") return backend.authed ? respond(200, { ok: true }) : respond(401, { error: "unauthorized" })
+      if (key === "POST /api/login") {
+        if (body.passcode !== "dev") return respond(401, { error: "unauthorized" })
+        backend.authed = true
+        return respond(200, { ok: true })
+      }
+      if (key === "POST /api/logout") {
+        backend.authed = false
+        return respond(200, { ok: true })
+      }
+      if (!backend.authed) return respond(401, { error: "unauthorized" })
 
       if (key === "GET /api/players") return respond(200, backend.players)
       if (key === "GET /api/history") return respond(200, backend.history)
@@ -76,20 +81,9 @@ function installFetch() {
   )
 }
 
-function signedIn(signedIn = true) {
-  authMock.current = {
-    getSession: async () => ({ data: { session: signedIn ? { user: { email: "me@example.com" } } : null } }),
-    onAuthStateChange: () => ({ data: { subscription: { unsubscribe() {} } } }),
-    signInWithOtp: async () => ({ error: null }),
-    verifyOtp: async () => ({ error: null }),
-    signOut: async () => ({ error: null }),
-  }
-}
-
 beforeEach(() => {
-  backend = { players: players.map((p) => ({ ...p })), session: null, history: [], fail: {}, calls: [] }
+  backend = { authed: true, players: players.map((p) => ({ ...p })), session: null, history: [], fail: {}, calls: [] }
   installFetch()
-  signedIn()
 })
 afterEach(() => {
   cleanup()
@@ -120,18 +114,33 @@ async function openEnglish() {
 const putBody = () => backend.calls.filter((c) => c.method === "PUT").at(-1)?.body
 
 describe("authentication states", () => {
-  it("shows sign-in, not the schedule or any API call, when signed out", async () => {
-    signedIn(false)
+  it("shows the passcode form, not the schedule or any data call, when signed out", async () => {
+    backend.authed = false
     await openEnglish()
-    await screen.findByLabelText("Email")
+    await screen.findByLabelText("Passcode")
     expect(screen.queryByText(/All Players|Todos los Jugadores/)).toBeNull()
-    expect(backend.calls).toHaveLength(0)
+    expect(backend.calls.map((c) => `${c.method} ${c.url}`)).toEqual(["GET /api/session"])
   })
 
-  it("shows an explicit configuration error when Supabase env is missing", async () => {
-    authMock.current = null
-    render(<Home />)
-    await screen.findByText(/not configured|no está configurado/i)
+  it("signs in with the passcode and then loads the roster; a wrong one keeps the form", async () => {
+    backend.authed = false
+    await openEnglish()
+    fireEvent.change(await screen.findByLabelText("Passcode"), { target: { value: "wrong" } })
+    fireEvent.click(screen.getByRole("button", { name: "Enter" }))
+    await screen.findByText(/That passcode is not right/)
+    expect(screen.queryByText(/All Players/)).toBeNull()
+    fireEvent.change(screen.getByLabelText("Passcode"), { target: { value: "dev" } })
+    fireEvent.click(screen.getByRole("button", { name: "Enter" }))
+    await screen.findByText("All Players (8)")
+  })
+
+  it("offers the backup download next to Sign out, and signing out hides the app", async () => {
+    await openEnglish()
+    await screen.findByText("All Players (8)")
+    expect(screen.getByRole("link", { name: "Download backup" }).getAttribute("href")).toBe("/api/export")
+    fireEvent.click(screen.getByText("Sign out"))
+    await screen.findByLabelText("Passcode")
+    expect(screen.queryByText(/All Players/)).toBeNull()
   })
 })
 

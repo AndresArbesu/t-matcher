@@ -1,126 +1,193 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, describe, expect, it, vi } from "vitest"
-import { AuthGate, type AuthClient, type AuthLabels } from "@/components/auth-gate"
+import { AuthGate, type AuthLabels } from "@/components/auth-gate"
+import { translations } from "@/lib/translations"
 
-afterEach(cleanup)
+afterEach(() => {
+  cleanup()
+  vi.unstubAllGlobals()
+})
 
 const labels: AuthLabels = {
   loading: "Checking session…",
   title: "Sign in",
-  email: "Email",
-  sendCode: "Email me a code",
-  checkEmail: "Check your email for a sign-in link or code.",
-  code: "Code",
-  verify: "Verify code",
-  sendFailed: "Could not send the email. Try again.",
-  verifyFailed: "That code did not work. Try again.",
+  passcode: "Passcode",
+  enter: "Enter",
+  wrongPasscode: "That passcode is not right.",
+  networkFailed: "Could not reach the server.",
+  loginFailed: "Could not sign in. Try again.",
   sessionFailed: "Could not check your session.",
-  signedInAs: "Signed in as",
   signOut: "Sign out",
+  downloadBackup: "Download backup",
 }
 
-function fakeAuth(overrides: Partial<AuthClient> = {}, session: { user: { email: string } } | null = null) {
-  let listener: ((e: string, s: unknown) => void) | undefined
-  const auth: AuthClient = {
-    getSession: vi.fn().mockResolvedValue({ data: { session }, error: null }),
-    onAuthStateChange: vi.fn().mockImplementation((cb) => {
-      listener = cb
-      return { data: { subscription: { unsubscribe: vi.fn() } } }
-    }),
-    signInWithOtp: vi.fn().mockResolvedValue({ error: null }),
-    verifyOtp: vi.fn().mockResolvedValue({ error: null }),
-    signOut: vi.fn().mockImplementation(async () => {
-      listener?.("SIGNED_OUT", null)
-      return { error: null }
-    }),
-    ...overrides,
-  }
-  return { auth, emit: (e: string, s: unknown) => listener?.(e, s) }
+const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status })
+
+/** Fetch fake of the three auth endpoints; `signedIn` flips on login and off on logout. */
+function fakeAuthApi(opts: { signedIn?: boolean; login?: () => Response | Promise<Response>; session?: () => Response | Promise<Response> } = {}) {
+  let signedIn = opts.signedIn ?? false
+  const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+    const method = init?.method ?? "GET"
+    if (url === "/api/session" && method === "GET") {
+      if (opts.session) return opts.session()
+      return signedIn ? json(200, { ok: true }) : json(401, { error: "unauthorized" })
+    }
+    if (url === "/api/login" && method === "POST") {
+      const res = opts.login ? await opts.login() : json(200, { ok: true })
+      if (res.ok) signedIn = true
+      return res
+    }
+    if (url === "/api/logout" && method === "POST") {
+      signedIn = false
+      return json(200, { ok: true })
+    }
+    return json(404, { error: "not_found" })
+  })
+  vi.stubGlobal("fetch", fetchMock)
+  return fetchMock
 }
 
-const renderGate = (auth: AuthClient) =>
+const renderGate = () =>
   render(
-    <AuthGate auth={auth} labels={labels} isDarkMode={false} redirectTo="http://localhost:3000/auth/callback">
+    <AuthGate labels={labels} isDarkMode={false}>
       <p>private schedule</p>
     </AuthGate>,
   )
 
+const enter = async (passcode: string) => {
+  fireEvent.change(await screen.findByLabelText(labels.passcode), { target: { value: passcode } })
+  fireEvent.click(screen.getByRole("button", { name: labels.enter }))
+}
+
 describe("AuthGate", () => {
   it("shows a loading state and hides content until the session is known", async () => {
-    let resolve!: (v: unknown) => void
-    const { auth } = fakeAuth({ getSession: vi.fn().mockReturnValue(new Promise((r) => (resolve = r))) as never })
-    renderGate(auth)
+    let resolve!: (r: Response) => void
+    fakeAuthApi({ session: () => new Promise<Response>((r) => (resolve = r)) })
+    renderGate()
     expect(screen.getByText(labels.loading)).toBeTruthy()
     expect(screen.queryByText("private schedule")).toBeNull()
-    resolve({ data: { session: null }, error: null })
-    await screen.findByLabelText(labels.email)
+    resolve(json(401, { error: "unauthorized" }))
+    await screen.findByLabelText(labels.passcode)
   })
 
-  it("does not render private content when signed out", async () => {
-    renderGate(fakeAuth().auth)
-    await screen.findByLabelText(labels.email)
+  it("asks for a single password field, not an email or a code, when signed out", async () => {
+    fakeAuthApi()
+    renderGate()
+    const input = (await screen.findByLabelText(labels.passcode)) as HTMLInputElement
+    expect(input.type).toBe("password")
+    expect(input.autocomplete).toBe("current-password")
     expect(screen.queryByText("private schedule")).toBeNull()
+    expect(document.querySelectorAll("input")).toHaveLength(1)
+    expect(document.querySelector('input[type="email"]')).toBeNull()
   })
 
-  it("requests an email code/magic link and then offers code entry", async () => {
-    const { auth } = fakeAuth()
-    renderGate(auth)
-    fireEvent.change(await screen.findByLabelText(labels.email), { target: { value: "me@example.com" } })
-    fireEvent.click(screen.getByText(labels.sendCode))
-    await screen.findByText(labels.checkEmail)
-    expect(auth.signInWithOtp).toHaveBeenCalledWith({
-      email: "me@example.com",
-      options: { emailRedirectTo: "http://localhost:3000/auth/callback" },
-    })
-    expect(screen.getByLabelText(labels.code)).toBeTruthy()
-  })
-
-  it("shows a fixed message, not the provider message, when sending fails", async () => {
-    const { auth } = fakeAuth({ signInWithOtp: vi.fn().mockResolvedValue({ error: { message: "rate limit: smtp key abc" } }) })
-    renderGate(auth)
-    fireEvent.change(await screen.findByLabelText(labels.email), { target: { value: "me@example.com" } })
-    fireEvent.click(screen.getByText(labels.sendCode))
-    await screen.findByText(labels.sendFailed)
-    expect(screen.queryByText(/smtp/)).toBeNull()
-    expect(screen.queryByText(labels.checkEmail)).toBeNull()
-  })
-
-  it("verifies the emailed code and reports a fixed error when it fails", async () => {
-    const { auth } = fakeAuth({ verifyOtp: vi.fn().mockResolvedValue({ error: { message: "Token has expired" } }) })
-    renderGate(auth)
-    fireEvent.change(await screen.findByLabelText(labels.email), { target: { value: "me@example.com" } })
-    fireEvent.click(screen.getByText(labels.sendCode))
-    fireEvent.change(await screen.findByLabelText(labels.code), { target: { value: "123456" } })
-    fireEvent.click(screen.getByText(labels.verify))
-    await screen.findByText(labels.verifyFailed)
-    expect(auth.verifyOtp).toHaveBeenCalledWith({ email: "me@example.com", token: "123456", type: "email" })
-    expect(screen.queryByText(/expired/)).toBeNull()
-  })
-
-  it("renders content for a signed-in user, shows who they are, and signs out", async () => {
-    const { auth } = fakeAuth({}, { user: { email: "me@example.com" } })
-    renderGate(auth)
+  it("posts the passcode and shows the app on success", async () => {
+    const fetchMock = fakeAuthApi()
+    renderGate()
+    await enter("s3cret")
     await screen.findByText("private schedule")
-    expect(screen.getByText(/me@example.com/)).toBeTruthy()
+    const [, init] = fetchMock.mock.calls.find(([u]) => u === "/api/login")!
+    expect(JSON.parse(init!.body as string)).toEqual({ passcode: "s3cret" })
+    expect(init!.method).toBe("POST")
+  })
+
+  it("submits with the Enter key (form submit)", async () => {
+    fakeAuthApi()
+    renderGate()
+    fireEvent.change(await screen.findByLabelText(labels.passcode), { target: { value: "s3cret" } })
+    fireEvent.submit(screen.getByLabelText(labels.passcode).closest("form")!)
+    await screen.findByText("private schedule")
+  })
+
+  it("keeps the button disabled while the field is empty or a request is running", async () => {
+    let finish!: (r: Response) => void
+    fakeAuthApi({ login: () => new Promise<Response>((r) => (finish = r)) })
+    renderGate()
+    const button = (await screen.findByRole("button", { name: labels.enter })) as HTMLButtonElement
+    expect(button.disabled).toBe(true)
+    await enter("s3cret")
+    await waitFor(() => expect((screen.getByRole("button", { name: labels.enter }) as HTMLButtonElement).disabled).toBe(true))
+    finish(json(200, { ok: true }))
+    await screen.findByText("private schedule")
+  })
+
+  it("shows the fixed wrong-passcode message on 401 and stays signed out", async () => {
+    fakeAuthApi({ login: () => json(401, { error: "unauthorized", detail: "leaky provider text" }) })
+    renderGate()
+    await enter("nope")
+    expect((await screen.findByRole("alert")).textContent).toBe(labels.wrongPasscode)
+    expect(screen.queryByText("private schedule")).toBeNull()
+    expect(screen.queryByText(/leaky/)).toBeNull()
+    expect((screen.getByLabelText(labels.passcode) as HTMLInputElement).value).toBe("nope")
+  })
+
+  it("shows the fixed network message when the server cannot be reached", async () => {
+    const fetchMock = fakeAuthApi()
+    renderGate()
+    await screen.findByLabelText(labels.passcode)
+    fetchMock.mockRejectedValueOnce(new TypeError("Failed to fetch"))
+    await enter("x")
+    expect((await screen.findByRole("alert")).textContent).toBe(labels.networkFailed)
+  })
+
+  it("shows a generic message for other server failures, never provider text", async () => {
+    fakeAuthApi({ login: () => json(500, { error: "server_error" }) })
+    renderGate()
+    await enter("x")
+    expect((await screen.findByRole("alert")).textContent).toBe(labels.loginFailed)
+  })
+
+  it("renders content for a signed-in user with Sign out and a backup link", async () => {
+    fakeAuthApi({ signedIn: true })
+    renderGate()
+    await screen.findByText("private schedule")
+    const link = screen.getByRole("link", { name: labels.downloadBackup }) as HTMLAnchorElement
+    expect(link.getAttribute("href")).toBe("/api/export")
+    expect(link.hasAttribute("download")).toBe(true)
+  })
+
+  it("does not show the backup link while signed out", async () => {
+    fakeAuthApi()
+    renderGate()
+    await screen.findByLabelText(labels.passcode)
+    expect(screen.queryByRole("link", { name: labels.downloadBackup })).toBeNull()
+  })
+
+  it("signs out through /api/logout and returns to the passcode form", async () => {
+    const fetchMock = fakeAuthApi({ signedIn: true })
+    renderGate()
+    await screen.findByText("private schedule")
     fireEvent.click(screen.getByText(labels.signOut))
-    await screen.findByLabelText(labels.email)
-    expect(auth.signOut).toHaveBeenCalled()
+    await screen.findByLabelText(labels.passcode)
+    expect(fetchMock.mock.calls.some(([u, i]) => u === "/api/logout" && i?.method === "POST")).toBe(true)
     expect(screen.queryByText("private schedule")).toBeNull()
-  })
-
-  it("moves from signed-out to signed-in when the auth state changes (magic link)", async () => {
-    const { auth, emit } = fakeAuth()
-    renderGate(auth)
-    await screen.findByLabelText(labels.email)
-    emit("SIGNED_IN", { user: { email: "me@example.com" } })
-    await screen.findByText("private schedule")
+    expect((screen.getByLabelText(labels.passcode) as HTMLInputElement).value).toBe("")
   })
 
   it("shows an error state, not an endless spinner, when the session check fails", async () => {
-    const { auth } = fakeAuth({ getSession: vi.fn().mockRejectedValue(new Error("network down")) as never })
-    renderGate(auth)
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new TypeError("network down")))
+    renderGate()
     await waitFor(() => expect(screen.getByText(labels.sessionFailed)).toBeTruthy())
     expect(screen.queryByText(labels.loading)).toBeNull()
+  })
+
+  it("treats a 500 from the session check as an error, not as signed out", async () => {
+    fakeAuthApi({ session: () => json(500, { error: "server_error" }) })
+    renderGate()
+    await screen.findByText(labels.sessionFailed)
+  })
+})
+
+describe("auth translations", () => {
+  it.each(["en", "es"] as const)("%s has exactly the passcode strings and no email/code leftovers", (lang) => {
+    expect(Object.keys(translations[lang].auth).sort()).toEqual(Object.keys(labels).sort())
+    for (const value of Object.values(translations[lang].auth)) expect(value.length).toBeGreaterThan(0)
+    const text = JSON.stringify(translations[lang])
+    expect(text).not.toMatch(/Supabase|NEXT_PUBLIC|magic|correo|e-?mail|sendCode|verify/i)
+  })
+  it("es and en differ", () => {
+    expect(translations.es.auth.enter).toBe("Entrar")
+    expect(translations.en.auth.enter).toBe("Enter")
   })
 })

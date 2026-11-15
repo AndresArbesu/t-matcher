@@ -1,6 +1,6 @@
 # Operations notes
 
-Where the live app runs, how changes ship, and the known problems. No secrets here.
+Where the live app runs, where the data lives, how changes ship, and how to recover. No secrets here.
 
 ## Where things are
 
@@ -9,66 +9,77 @@ Where the live app runs, how changes ship, and the known problems. No secrets he
 | Live app | https://t-matcher.vercel.app |
 | Code | https://github.com/AndresArbesu/t-matcher (`main` is production) |
 | Hosting | Vercel project `t-matcher`, team `aarbesu-2275s-projects` (Hobby plan) |
-| Database and login | Supabase project `t-matcher`, ref `huaywnkxhcrlagdjpnzp`, org `felvaxgklqzqzjlmwryh`, region São Paulo, Free plan |
+| Data | A **private Vercel Blob store** connected to the Vercel project (see "Where the data lives") |
+| Login | One shared passcode in the `APP_PASSCODE` environment variable on Vercel |
 | Old v0 site | `v0-match-history-persistence.vercel.app` (still up, untouched, its data was abandoned on purpose) |
+| Former Supabase project | `t-matcher`, ref `huaywnkxhcrlagdjpnzp`: **superseded and unused**. Nothing reads it any more. It can be deleted (see below) |
 
-Secrets live only on the owner's Mac, outside the repo: `~/.t-matcher-prod/db-password` and `~/.t-matcher-prod/anon-key` (mode 600). The Supabase and Vercel CLI logins are in the macOS keychain / CLI config. The two `NEXT_PUBLIC_SUPABASE_*` values are set in Vercel for Production and Preview.
+The Vercel CLI login is in the macOS keychain / CLI config. The old `~/.t-matcher-prod/` secrets (Supabase database password and anon key) are no longer needed.
 
 ## How a change ships
 
-1. Branch, commit, open a pull request. GitHub runs typecheck, tests and build (`checks`).
+1. Branch, commit, open a pull request. GitHub runs typecheck, tests and build (`checks`); it needs no secrets.
 2. Vercel builds a preview of the branch.
 3. Merge once `checks` is green. `main` is protected: no direct pushes, also for the owner.
 4. Merging to `main` deploys production automatically.
 
-Database migrations are **not** automatic. After merging a change that adds a file under `supabase/migrations/`, apply it by hand:
+There are no database migrations. The data is one JSON document with a `version` field; a change that alters its shape has to bring a migration in code (read old version, write new) in the same pull request.
 
-```
-npx supabase link --project-ref huaywnkxhcrlagdjpnzp
-npx supabase db push --remote -p "$(cat ~/.t-matcher-prod/db-password)" --output-format text --agent no
-```
+Note: preview deployments use the same Blob store and passcode as production unless the variables are scoped differently in Vercel. Treat a preview as live data.
 
-Run `npx supabase db push --remote --dry-run ...` first and read what it will apply. Supabase CLI note: in this setup it needs `--output-format text --agent no` or it refuses to prompt.
+## Where the data lives
 
-## Known problems
+- **Document:** Blob pathname `t-matcher/data.json` in the private store. It holds the roster, every session and match, and `meta.lastSnapshot`.
+- **Snapshots:** `t-matcher/snapshots/YYYY-MM-DD.json`. The first write of each UTC day saves one; the newest 30 are kept, older ones are deleted automatically. This is the "undo" for a bad day: you can go back about a month.
+- **Why it does not pause:** a Blob store is plain object storage with no activity requirement, unlike a free Supabase database that pauses after a week. Nothing needs to "keep it awake".
+- **Store credential:** `BLOB_READ_WRITE_TOKEN` is created and set by Vercel when the Blob store is connected to the project. Never create or paste it by hand into the repo.
+- **If the credential is missing on Vercel** the app answers every data call with a generic error (500) instead of using a temporary file. That means the store is not connected to this environment; connect it under the project's Storage tab.
+- **Scoring and skill rules live in code**, not in the data: skill 1–5 (`lib/validation.ts`), scoring weights (`lib/match-analyzer.ts`), player and session rules (`lib/repo.ts`). Changing them is a pull request, and old data keeps working.
 
-### 1. Sign-in email is limited (open)
+## The passcode
 
-Supabase's built-in email sender is for testing only: about **2 emails per hour for the whole project**, and it only delivers to members of the Supabase organization (currently only the owner). Symptoms: "couldn't send" on the sign-in page, or `429 over_email_send_rate_limit` from the auth API.
+- Stored as `APP_PASSCODE` (server only) in the Vercel project settings, for Production (and Preview if previews should be usable).
+- **Required:** if it is unset on Vercel, login and every protected call fail with a 500 on purpose.
+- It is the only protection, so keep it long and random (`openssl rand -base64 18`) and in a password manager. The app cannot rate-limit across serverless instances; it only waits one second after each wrong guess.
+- **To change it:** update `APP_PASSCODE` in Vercel (Settings, then Environment Variables), then redeploy (an environment variable change only applies to new deployments). Everyone, on every device, is signed out and must enter the new one, because sessions are signed with the passcode.
+- Locally, with no `APP_PASSCODE`, the passcode is `dev`. That fallback never applies on Vercel.
 
-Workaround: wait for the hourly limit to reset, request one email, and type the **code** into the same page (a link only works in the browser that asked for it).
+## Backups and recovery
 
-Fix: configure a custom SMTP sender in Supabase (Authentication, then Emails, then SMTP settings) with a real provider such as Resend, or a Gmail app password for personal use. After that, raise the rate limit under Authentication, then Rate Limits. The app code does not need to change. Until then, nobody except the owner can sign in.
+- **Easiest backup:** sign in and press **Download backup** (it calls `GET /api/export`). Do it now and then, especially before changing anything big. Keep the file private; it contains the player names.
+- **Automatic copies:** the daily snapshots above. They live in the same Blob store, so they protect against mistakes, not against deleting the whole store.
+- **Restore from an export or snapshot:** the file is a complete document. Check it is valid JSON with `"version": 1`, then replace `t-matcher/data.json` with it. Two ways:
+  - With the Vercel CLI's blob commands (`vercel blob get`, `vercel blob put`): fetch a snapshot with `get`, or upload your file with `put` to the pathname `t-matcher/data.json` with overwrite allowed and **private** access. Check `vercel blob put --help` for the exact flags on your CLI version; they were not verified for this document.
+  - With the SDK the app itself uses: pull the project's variables (`vercel env pull .env.vercel`), then run once in the project folder:
+    ```
+    node --env-file=.env.vercel -e "import('@vercel/blob').then(async (b) => { await b.put('t-matcher/data.json', require('fs').readFileSync('backup.json', 'utf8'), { access: 'private', allowOverwrite: true, contentType: 'application/json' }); console.log('restored') })"
+    ```
+    Delete `.env.vercel` afterwards (it contains the store token and is git-ignored by the `.env*` rule).
+- After a restore, reload the app; the next save continues from the restored document.
 
-### 2. Free Supabase projects pause after a week of inactivity (open)
+## Limits and things to know
 
-A Free project with too little activity for 7 days is paused (Supabase emails a warning about a week before). The app is down until someone resumes it: Supabase dashboard, select the project, **Resume project**. Data and settings come back. Paused projects can be resumed for up to a year (older notes say 90 days, so do not rely on the longer number). The Free plan also has **no automatic backups**.
+- Vercel Hobby is for personal, non-commercial use only. Blob on Hobby has monthly usage allowances; this app stores a few kilobytes, so it is far below them. Check the Vercel Blob pricing page if the limits ever matter.
+- Writes are conditional (ETag). If two devices save at the same moment, one retries automatically; the app retries up to six times with short pauses, and only then answers "conflict" so the user simply tries again.
+- A snapshot or old-snapshot cleanup that fails is only logged (a class name, never a secret) and never blocks a save.
+- Preview deployments use a **separate** Blob store (`t-matcher-preview`), so testing a pull request never touches real data. Its passcode is the same one.
+- Verified against the real Blob service (the disposable preview store), not just fakes: login, create players, save a locked schedule, mark it played, history, export, the daily snapshot, and 24 simultaneous writes from three rounds of eight (all saved). Two service quirks found that way and fixed in `lib/blob-store.ts`: reads return a *weak* ETag (`W/"..."`) that conditional writes reject, so the prefix is stripped; and simultaneous writers get a generic "conflicting operation" error, which is treated as a retryable conflict.
+- Not yet verified: the production store itself with the real passcode (first sign-in after the switch), and the restore commands below.
+- Peek at a store without the app: `npx vercel blob list --rw-token "$BLOB_READ_WRITE_TOKEN"` (token from `vercel env pull`, delete the file afterwards).
 
-Options when we pick this up: upgrade to Pro (never pauses, daily backups), keep it free and accept resuming by hand, or add a scheduled request that keeps it active (a few real requests a day count; not built, and not guaranteed by Supabase).
+## Retiring the Supabase project
 
-Manual backup, verified to work against the live project:
-
-```
-npx supabase db dump --remote -p "$(cat ~/.t-matcher-prod/db-password)" --data-only -f ~/.t-matcher-prod/backup-$(date +%F).sql --output-format text --agent no
-```
-
-It needs Docker running. Keep the file private; it contains player data.
-
-### 3. Smaller limits
-
-- Preview deployments use the **production** database (there is no staging database). Test with fake players. Sign-in redirects are only allowed for the production URL, so on a preview type the emailed code instead of clicking the link.
-- Vercel Hobby is for personal, non-commercial use only.
-- Not yet verified: a complete signed-in session on production (add players, generate, lock, regenerate, save, record a played match). Local checks cover it, production sign-in was blocked by problem 1.
-- An independent code review was started and interrupted; it never produced findings. Run one before real users depend on it.
+The former Supabase project (`huaywnkxhcrlagdjpnzp`, region São Paulo, Free plan) holds the old roster and history and is no longer used. If anything in it is worth keeping, enter it into the new app first; there is no automatic import. Then delete the project in the Supabase dashboard (Project settings, then General, then Delete project), and remove the `NEXT_PUBLIC_SUPABASE_*` variables from the Vercel project. A paused or deleted Supabase project no longer affects the app.
 
 ## Changing the URL later
 
-Rename the Vercel project, or add a domain in Vercel (a DNS record is needed for a custom domain). Then update Supabase's site URL and redirect allow-list to the new address, or email sign-in breaks. Use a throwaway folder with a `supabase/config.toml` that only sets `[auth] site_url` and `additional_redirect_urls`, then `npx supabase config diff --remote=huaywnkxhcrlagdjpnzp` and `config push`. A diff that lists only those two keys is safe to push.
+Rename the Vercel project, or add a domain in Vercel (a DNS record is needed for a custom domain). Nothing else needs updating: the login does not depend on the address, and the CSRF check compares the request's own host.
 
 ## Local development
 
 ```
-npx supabase start --exclude realtime,storage-api,imgproxy,postgres-meta,studio,edge-runtime,logflare,vector,supavisor
+npm install
+npm run dev          # data in .data/store.json, passcode "dev" unless APP_PASSCODE is set
+node scripts/smoke.mjs   # in another terminal: end-to-end check against the running app
+npm test             # everything else; no network and no services needed
 ```
-
-Copy the local API URL and anon key from `npx supabase status` into `.env.local`, then `npm run dev`. Sign-in emails go to the local inbox at http://127.0.0.1:54324. `node --env-file=.env.local scripts/local-smoke.mjs` checks login, account isolation and persistence against that stack. `npm test` runs all other tests and needs no Docker.

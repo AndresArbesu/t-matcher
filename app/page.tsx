@@ -1,34 +1,15 @@
 "use client"
 
-import { useEffect, useState } from "react"
-import { AuthGate, type AuthClient } from "@/components/auth-gate"
+import { useState } from "react"
+import { AuthGate } from "@/components/auth-gate"
 import { Scheduler } from "@/components/scheduler"
 import { Button } from "@/components/ui/button"
-import { createClient } from "@/lib/supabase/client"
 import { translations } from "@/lib/translations"
 
 export default function TennisScheduler() {
   const [language, setLanguage] = useState<"en" | "es">("es")
   const [isDarkMode, setIsDarkMode] = useState(true)
   const t = translations[language]
-
-  // The browser client is created after mount so a missing configuration is reported, not thrown during render.
-  const [auth, setAuth] = useState<AuthClient | null>(null)
-  const [configError, setConfigError] = useState(false)
-  const [origin, setOrigin] = useState("")
-  const [linkFailed, setLinkFailed] = useState(false)
-
-  useEffect(() => {
-    setOrigin(window.location.origin)
-    setLinkFailed(new URLSearchParams(window.location.search).has("auth_error"))
-    try {
-      setAuth(createClient().auth as unknown as AuthClient)
-    } catch {
-      setConfigError(true)
-    }
-  }, [])
-
-  const mutedText = isDarkMode ? "text-slate-400" : "text-slate-600"
 
   return (
     <div
@@ -65,23 +46,9 @@ export default function TennisScheduler() {
           </div>
         </div>
 
-        {linkFailed && (
-          <p role="alert" className={`mb-4 text-sm ${isDarkMode ? "text-red-400" : "text-red-600"}`}>
-            {t.authLinkFailed}
-          </p>
-        )}
-
-        {configError ? (
-          <p role="alert" className={isDarkMode ? "text-red-400" : "text-red-600"}>
-            {t.notConfigured}
-          </p>
-        ) : !auth ? (
-          <p className={mutedText}>{t.loading}</p>
-        ) : (
-          <AuthGate auth={auth} labels={t.auth} isDarkMode={isDarkMode} redirectTo={`${origin}/auth/callback`}>
-            <Scheduler language={language} isDarkMode={isDarkMode} />
-          </AuthGate>
-        )}
+        <AuthGate labels={t.auth} isDarkMode={isDarkMode}>
+          <Scheduler language={language} isDarkMode={isDarkMode} />
+        </AuthGate>
       </div>
     </div>
   )

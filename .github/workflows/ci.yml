@@ -21,9 +21,7 @@ jobs:
       - run: npm ci
       - run: npx tsc --noEmit
       - run: npm test
-      # Placeholder public values only; the real ones live in Vercel, never in this repo.
+      # No secrets needed: the build never reads the passcode or the Blob token.
       - run: npm run build
         env:
-          NEXT_PUBLIC_SUPABASE_URL: http://127.0.0.1:54321
-          NEXT_PUBLIC_SUPABASE_ANON_KEY: ci-placeholder
           NEXT_TELEMETRY_DISABLED: "1"

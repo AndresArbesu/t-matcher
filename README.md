@@ -2,18 +2,15 @@
 
 A Next.js tennis/padel doubles scheduler imported from the v0 `match-history-persistence.zip` export. This replaces the old Java prototype on `main` while preserving its commits in Git history.
 
-Hosting is intentionally undecided. The code is compatible with a Next.js host and Supabase, but nothing here deploys or configures a hosted service.
-
-### Deployment decision (deferred)
-
-Vercel Hobby + Supabase Free is the lowest-friction **personal, non-commercial** trial path. [Vercel restricts Hobby to non-commercial use](https://vercel.com/docs/limits/fair-use-guidelines#commercial-usage); use a paid plan or another host if this becomes a commercial product. [Supabase Free](https://supabase.com/pricing) has a 500 MB database, pauses after a week of inactivity, and offers no automatic backups. Before publishing: identify whether the former Vercel/Supabase projects still exist and export their data if possible; create/verify a durable hosted database and backup/restore procedure; apply and review the migration; set the hosted URL/anon key and auth redirect allowlist; then deploy a reviewed commit and test sign-in, session reload, lock/regeneration and cross-account isolation on the actual production URL. Do not put service-role keys in the browser or treat the disposable local stack as production data.
+It is built for one organizer who uses it now and then from one or two devices: no database to pause, no email to send, almost nothing to maintain.
 
 ## What it does
 
-- One organizer per account signs in with Supabase Auth (email code or magic link). Everything is private to that account.
-- A persistent **roster** of players (stable IDs, skill, soft "inactive" instead of deletion).
+- One shared **passcode** protects the app. There are no accounts and no email.
+- A persistent **roster** of players (stable IDs, skill 1–5, soft "inactive" instead of deletion).
 - A **dated session** per day: choose participants, generate arrangements (multiples of four players), lock matches, regenerate the unlocked ones, **save**, and reload later with participants, match order and lock states intact.
 - **Record** saved matches as played; played matches become the history that scores later suggestions (weights below). Un-recording removes a match from history but keeps it on its session.
+- **Download backup** (next to "Sign out") saves the whole data file to the device.
 
 ## How arrangements are generated and scored
 
@@ -33,57 +30,55 @@ Vercel Hobby + Supabase Free is the lowest-friction **personal, non-commercial**
 
 Individual rivals are counted per opposing *pair*, so facing someone you met before counts even if the other players differ. Players who were partners before are not counted as rivals, and an exact rematch is counted once, as a rival pair, not again as four individual rivals. An exact rematch still also triggers the own-pair penalty for both teams (unchanged from before).
 
-## Setup
-
-1. Create a **new** Supabase project (the migration refuses to run over the legacy v0 schema).
-2. Apply `supabase/migrations/20261115000000_persistent_scheduler.sql`: paste it into the SQL editor, or `supabase link` + `supabase db push` if you use the CLI. Read it first; it creates four tables with RLS enabled and forced, revokes default grants, and adds the `save_session_draft` function.
-   Then apply `supabase/migrations/20261116000000_skill_levels_1_to_5.sql` (limits skill to 1–5). On a database that already holds players it first counts any player above 5 and, if there are any, aborts with a message **without changing data or the old constraint**; review them with `select id, name, skill_level from public.players where skill_level > 5;`, choose their new 1–5 level yourself, then re-run it.
-3. In Auth settings: enable the Email provider; add `http://localhost:3000/auth/callback` (and your own deployed URL later) to the redirect URLs. For the emailed **code** option, include `{{ .Token }}` in the Magic Link email template; the link works without it. After you have signed in once, consider turning off "Allow new users to sign up" so nobody else can create an account on your project.
-4. Configure and run:
+## Setup (local)
 
 ```sh
-npm ci
-cp .env.example .env.local   # fill in URL + anon key only
+npm install
+echo 'APP_PASSCODE=pick-something' > .env.local   # optional
 npm run dev
 ```
 
-No service-role key is used or needed. Without the two env vars the page shows a "not configured" message instead of crashing.
+Open http://localhost:3000. If `APP_PASSCODE` is not set, **the passcode is `dev`** (local development only; on Vercel a missing `APP_PASSCODE` makes the app refuse every request). Locally the data is a plain JSON file, `.data/store.json` (git-ignored); delete it to start over.
 
-For an isolated local integration test, run `npx supabase start --exclude realtime,storage-api,imgproxy,postgres-meta,studio,edge-runtime,logflare,vector,supavisor`, copy the local API URL and **anon** key from `npx supabase status` into `.env.local`, then start `npm run dev -- -H 127.0.0.1 -p 3000`. `node --env-file=.env.local scripts/local-smoke.mjs` creates two synthetic accounts via the local Mailpit service and checks real HTTP API/RLS behavior. It refuses nonlocal URLs. `npx supabase stop` shuts down the containers afterward. Local test data is disposable; the real hosted project is a separate step.
+Copy `.env.example` for the list of variables. Neither is a `NEXT_PUBLIC_` variable: both stay on the server.
 
-## Data model and safety
+## Architecture
 
-| Table | Purpose |
-| --- | --- |
-| `players` | `owner_id`, name (unique per owner, case-insensitive), skill 1–5, `active` |
-| `sessions` | one per owner per `session_date` |
-| `session_players` | participants of a session |
-| `session_matches` | ordered (`position`) matches, four distinct players, `locked`, `played`, `notes` |
+- **One private JSON document** holds everything (`lib/store.ts`): `{ version: 1, players, sessions: { "YYYY-MM-DD": { participants, matches, updated_at } }, meta }`. The `version` field lets later changes migrate it.
+- **Production storage is a private [Vercel Blob](https://vercel.com/docs/vercel-blob/private-storage)** at `t-matcher/data.json` (`lib/blob-store.ts`). Reads bypass the CDN cache (`useCache: false`), so you always see the latest save. Writes are conditional on the version that was read (`ifMatch` ETag); if two requests collide the loser re-reads and retries (up to 4 times, then `409 conflict`). Private Blob needs `@vercel/blob` 2.3 or newer.
+- **Local storage is a file** (`lib/file-store.ts`, `.data/store.json`) with the same ETag rule. It is used only when `BLOB_READ_WRITE_TOKEN` is absent **and** the app is not on Vercel. On Vercel without the token the app fails loudly (500) rather than writing to an ephemeral disk.
+- **Daily snapshot:** the first write of each UTC day also saves a copy to `t-matcher/snapshots/YYYY-MM-DD.json`; the newest 30 are kept. A snapshot problem never fails the user's request.
+- **Business rules live in `lib/repo.ts`** (the old SQL schema is gone): player names unique ignoring case, skill 1–5, players are never deleted (only deactivated), played matches are history and survive a draft save, a participant of a played match cannot be removed (`409 in_use`), every new match has four distinct participants.
+- **Passcode login** (`lib/auth.ts`): `POST /api/login` compares in constant time and, after a wrong passcode, waits one second and answers 401. A correct one sets the `tm_session` cookie: an expiry time plus an HMAC-SHA256 signature keyed with the passcode; `httpOnly`, `SameSite=Lax`, `Secure` in production, valid 180 days. Changing `APP_PASSCODE` therefore signs every device out. Every `/api` route checks the cookie before touching data; state-changing routes also refuse a foreign `Origin`.
+- **Export:** `GET /api/export` (signed in) downloads the whole document as `t-matcher-backup-YYYY-MM-DD.json`.
+- All API responses are `Cache-Control: no-store`, and errors are fixed codes only (storage error text is never returned or logged beyond a class name).
 
-- RLS: `authenticated` only, owner-scoped (`owner_id = auth.uid()`) on every command. No `PUBLIC`/`anon` policies, no `using (true)`.
-- Composite foreign keys include `owner_id`, so a row can never reference another account's player or session even if its ID is known. Match players must be participants of that same session.
-- History is preserved: players cannot be deleted (no `DELETE` grant; "Remove" deactivates), a participant used in a match cannot be removed, played matches cannot be deleted. Those foreign keys are `NO ACTION` and deferred, so only deleting the whole auth user cascades everything.
-- Saving a session draft goes through `save_session_draft` (`SECURITY INVOKER`, so RLS applies): it replaces participants and *unplayed* matches atomically and keeps played ones.
-- The old `match_history` table/API, its public policies and cascading deletes were removed. This version has no migration path for data in the legacy schema.
+### The passcode must be strong
 
-API routes (`app/api`) return 401 without a valid user (checked with `auth.getUser()`), 400 for invalid payloads, 422 when a referenced player is not yours, 404/409 as appropriate, and only fixed error codes — provider messages are logged as a type at most and never returned.
+A serverless function cannot rate-limit across requests, so the one-second delay only slows each guess. Anyone who can reach the site can try guesses in parallel. Use a long random passcode (for example `openssl rand -base64 18`), not a word or a date, and keep it in a password manager.
 
 ## Tests and checks
 
 ```sh
-npm test            # vitest: validation, API routes, UI, and the SQL migration on real Postgres (PGlite)
+npm test            # vitest: stores, business rules, auth, routes, UI, smoke script
 npx tsc --noEmit
 npm run build
 ```
 
-What the tests do and do not prove:
+With the app running (`npm run dev`), an end-to-end check over real HTTP against the local file store:
 
-- The migration is executed against an in-process Postgres (PGlite) with stand-ins for Supabase's `anon`/`authenticated` roles, `auth.users` and `auth.uid()`. RLS, constraints, grants, FK behavior and the draft function are genuinely exercised there.
-- The local smoke script has also run against a real Supabase CLI stack (GoTrue, PostgREST, Postgres, Mailpit) and a real Next server. It checked two-account isolation, player writes, draft save/reload, cross-account write rejection and played history. The local browser was used to sign in via a synthetic magic link, generate an eight-player schedule, lock/regenerate a match and reopen that schedule by date after refresh.
-- **Still unverified against a hosted project:** email delivery, the hosted redirect configuration, production build serving, and backup/restore. API-route and component unit tests use mocked Supabase clients; local stack and browser checks are separate evidence.
+```sh
+node scripts/smoke.mjs                    # passcode from APP_PASSCODE, else "dev"
+BASE_URL=http://127.0.0.1:3000 APP_PASSCODE=... node scripts/smoke.mjs
+```
+
+It creates players named "Smoke …" in `.data/store.json`, saves and records a match, checks the history and the export, and prints `PASS`. It refuses a non-local `BASE_URL` unless `ALLOW_REMOTE=1`.
+
+What the tests do and do not prove: the unit tests run against fakes of the four `@vercel/blob` functions (the fake mimics the real service's weak-ETag reads). `scripts/smoke.mjs` run against a local server wired to a real Blob store was used to confirm the real behaviour, including simultaneous writers (see `docs/OPERATIONS.md`). The production store itself is only proven by the first sign-in after a deploy.
 
 ## Known gaps
 
 - Schedules are for multiples of four players only; one saved schedule per date (candidates other than the saved one are not kept).
 - Scoring rules are typed constants, not yet user-editable. Regeneration may alternate between two good schedules when the candidate pool is small.
-- No automated off-site backups or CI configured; no deployment has been done. A free Supabase project has no automatic backups and pauses after a week of inactivity; arrange a periodic external export before trusting it as the only copy of the roster/history.
+- One shared passcode: everyone who knows it sees and edits the same data. There is no per-user history.
+- Two people saving at the same instant is handled by retry, but the last save wins for the same field.

@@ -20,6 +20,9 @@ yarn-error.log*
 .env*
 !.env.example
 
+# local development data (FileStore)
+.data/
+
 # vercel
 .vercel
 
