@@ -1,97 +1,75 @@
 "use client"
 
-import { useEffect, useState, type ReactNode } from "react"
+import { useEffect, useState, type FormEvent, type ReactNode } from "react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-
-/** The subset of Supabase's auth client the gate uses (injectable for tests). */
-export interface AuthClient {
-  getSession(): Promise<{ data: { session: { user: { email?: string } } | null }; error?: unknown }>
-  onAuthStateChange(cb: (event: string, session: { user: { email?: string } } | null) => void): {
-    data: { subscription: { unsubscribe(): void } }
-  }
-  signInWithOtp(args: { email: string; options: { emailRedirectTo: string } }): Promise<{ error: unknown }>
-  verifyOtp(args: { email: string; token: string; type: "email" }): Promise<{ error: unknown }>
-  signOut(): Promise<{ error: unknown }>
-}
+import { ClientApiError, api } from "@/lib/client-api"
 
 export interface AuthLabels {
   loading: string
   title: string
-  email: string
-  sendCode: string
-  checkEmail: string
-  code: string
-  verify: string
-  sendFailed: string
-  verifyFailed: string
+  passcode: string
+  enter: string
+  wrongPasscode: string
+  networkFailed: string
+  loginFailed: string
   sessionFailed: string
-  signedInAs: string
   signOut: string
+  downloadBackup: string
 }
 
 interface AuthGateProps {
-  auth: AuthClient
   labels: AuthLabels
   isDarkMode: boolean
-  redirectTo: string
   children: ReactNode
 }
 
 type Status = "loading" | "signedOut" | "signedIn" | "error"
 
-export function AuthGate({ auth, labels, isDarkMode, redirectTo, children }: AuthGateProps) {
+export function AuthGate({ labels, isDarkMode, children }: AuthGateProps) {
   const [status, setStatus] = useState<Status>("loading")
-  const [userEmail, setUserEmail] = useState<string | null>(null)
-  const [email, setEmail] = useState("")
-  const [code, setCode] = useState("")
-  const [codeSent, setCodeSent] = useState(false)
+  const [passcode, setPasscode] = useState("")
   const [busy, setBusy] = useState(false)
   const [message, setMessage] = useState<string | null>(null)
 
   useEffect(() => {
-    const apply = (session: { user: { email?: string } } | null) => {
-      setUserEmail(session?.user.email ?? null)
-      setStatus(session ? "signedIn" : "signedOut")
-    }
     let cancelled = false
-    auth
-      .getSession()
-      .then(({ data }) => !cancelled && apply(data.session))
-      .catch(() => !cancelled && setStatus("error"))
-    const { data } = auth.onAuthStateChange((_event, session) => apply(session))
+    api
+      .checkSession()
+      .then(() => !cancelled && setStatus("signedIn"))
+      .catch((error) => {
+        if (cancelled) return
+        setStatus(error instanceof ClientApiError && error.status === 401 ? "signedOut" : "error")
+      })
     return () => {
       cancelled = true
-      data.subscription.unsubscribe()
     }
-  }, [auth])
+  }, [])
 
-  const sendCode = async () => {
+  const signIn = async (event: FormEvent) => {
+    event.preventDefault()
     setBusy(true)
     setMessage(null)
     try {
-      const { error } = await auth.signInWithOtp({ email: email.trim(), options: { emailRedirectTo: redirectTo } })
-      if (error) setMessage(labels.sendFailed)
-      else setCodeSent(true)
-    } catch {
-      setMessage(labels.sendFailed)
+      await api.login(passcode)
+      setPasscode("")
+      setStatus("signedIn")
+    } catch (error) {
+      if (error instanceof ClientApiError && error.status === 401) setMessage(labels.wrongPasscode)
+      else if (error instanceof ClientApiError && error.code === "network") setMessage(labels.networkFailed)
+      else setMessage(labels.loginFailed)
     } finally {
       setBusy(false)
     }
   }
 
-  const verify = async () => {
-    setBusy(true)
-    setMessage(null)
+  const signOut = async () => {
     try {
-      const { error } = await auth.verifyOtp({ email: email.trim(), token: code.trim(), type: "email" })
-      if (error) setMessage(labels.verifyFailed)
-    } catch {
-      setMessage(labels.verifyFailed)
+      await api.logout()
     } finally {
-      setBusy(false)
+      setStatus("signedOut")
     }
   }
 
@@ -99,6 +77,9 @@ export function AuthGate({ auth, labels, isDarkMode, redirectTo, children }: Aut
   const inputClass = isDarkMode
     ? "bg-slate-700 border-slate-600 text-slate-100 placeholder:text-slate-400"
     : "bg-white border-slate-300 text-slate-900"
+  const outlineClass = isDarkMode
+    ? "bg-slate-800 border-slate-600 text-slate-100 hover:bg-slate-700"
+    : "bg-white border-slate-300 text-slate-900 hover:bg-slate-50"
 
   if (status === "loading") {
     return <p className={mutedText}>{labels.loading}</p>
@@ -116,19 +97,12 @@ export function AuthGate({ auth, labels, isDarkMode, redirectTo, children }: Aut
     return (
       <div className="space-y-6">
         <div className={`flex flex-col items-start gap-2 sm:flex-row sm:items-center sm:justify-end text-sm ${mutedText}`}>
-          <span>
-            {labels.signedInAs} {userEmail}
-          </span>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => void auth.signOut()}
-            className={
-              isDarkMode
-                ? "bg-slate-800 border-slate-600 text-slate-100 hover:bg-slate-700"
-                : "bg-white border-slate-300 text-slate-900 hover:bg-slate-50"
-            }
-          >
+          <Button asChild variant="outline" size="sm" className={outlineClass}>
+            <a href="/api/export" download>
+              {labels.downloadBackup}
+            </a>
+          </Button>
+          <Button variant="outline" size="sm" onClick={() => void signOut()} className={outlineClass}>
             {labels.signOut}
           </Button>
         </div>
@@ -142,59 +116,35 @@ export function AuthGate({ auth, labels, isDarkMode, redirectTo, children }: Aut
       <CardHeader>
         <CardTitle className={isDarkMode ? "text-slate-100" : "text-slate-900"}>{labels.title}</CardTitle>
       </CardHeader>
-      <CardContent className="space-y-4">
-        <div>
-          <Label htmlFor="auth-email" className={isDarkMode ? "text-slate-200" : "text-slate-700"}>
-            {labels.email}
-          </Label>
-          <Input
-            id="auth-email"
-            type="email"
-            autoComplete="email"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            className={inputClass}
-          />
-        </div>
-        <Button
-          onClick={sendCode}
-          disabled={busy || !email.trim()}
-          className="bg-blue-600 hover:bg-blue-700 text-white disabled:bg-slate-600"
-        >
-          {labels.sendCode}
-        </Button>
-
-        {codeSent && (
-          <div className="space-y-4">
-            <p className={`text-sm ${mutedText}`}>{labels.checkEmail}</p>
-            <div>
-              <Label htmlFor="auth-code" className={isDarkMode ? "text-slate-200" : "text-slate-700"}>
-                {labels.code}
-              </Label>
-              <Input
-                id="auth-code"
-                inputMode="numeric"
-                autoComplete="one-time-code"
-                value={code}
-                onChange={(e) => setCode(e.target.value)}
-                className={inputClass}
-              />
-            </div>
-            <Button
-              onClick={verify}
-              disabled={busy || !code.trim()}
-              className="bg-blue-600 hover:bg-blue-700 text-white disabled:bg-slate-600"
-            >
-              {labels.verify}
-            </Button>
+      <CardContent>
+        <form onSubmit={signIn} className="space-y-4">
+          <div>
+            <Label htmlFor="auth-passcode" className={isDarkMode ? "text-slate-200" : "text-slate-700"}>
+              {labels.passcode}
+            </Label>
+            <Input
+              id="auth-passcode"
+              type="password"
+              autoComplete="current-password"
+              value={passcode}
+              onChange={(e) => setPasscode(e.target.value)}
+              className={inputClass}
+            />
           </div>
-        )}
+          <Button
+            type="submit"
+            disabled={busy || !passcode}
+            className="bg-blue-600 hover:bg-blue-700 text-white disabled:bg-slate-600"
+          >
+            {labels.enter}
+          </Button>
 
-        {message && (
-          <p role="alert" className={`text-sm ${isDarkMode ? "text-red-400" : "text-red-600"}`}>
-            {message}
-          </p>
-        )}
+          {message && (
+            <p role="alert" className={`text-sm ${isDarkMode ? "text-red-400" : "text-red-600"}`}>
+              {message}
+            </p>
+          )}
+        </form>
       </CardContent>
     </Card>
   )

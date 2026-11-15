@@ -1,100 +1,161 @@
-import type { SupabaseClient } from "@supabase/supabase-js"
-import { toMatchHistory, type PlayedMatchRow } from "./history"
+import { ApiError } from "./api/errors"
+import { toMatchHistory } from "./history"
+import { mutate, type Doc, type DocStore, type StoredMatch } from "./store"
 import type { MatchHistory, Player, SavedMatch, SavedSession } from "./types"
 import type { MatchPatch, PlayerCreate, PlayerPatch, SessionDraftInput } from "./validation"
 
 /**
- * All database access. Every call runs as the signed-in user through the anon key,
- * so Row Level Security scopes it to their rows; errors are thrown untouched and
- * converted to safe responses by `toErrorResponse`.
+ * All data access, over the single JSON document. The rules the old SQL schema
+ * enforced live here: unique player names, players never deleted, played matches
+ * kept, a participant of a played match cannot be removed.
  */
 
-const PLAYER_COLUMNS = "id, name, skill_level, active, created_at"
-const MATCH_COLUMNS =
-  "id, session_id, position, team1_player1_id, team1_player2_id, team2_player1_id, team2_player2_id, locked, played, notes, created_at"
+const nameKey = (name: string) => name.trim().toLowerCase()
 
-type MatchRow = PlayedMatchRow & { session_id: string; position: number; locked: boolean; played: boolean }
-
-function check<T>(result: { data: T; error: unknown }): T {
-  if (result.error) throw result.error
-  return result.data
+function toSavedMatch(match: StoredMatch): SavedMatch {
+  return {
+    id: match.id,
+    position: match.position,
+    team1: match.team1,
+    team2: match.team2,
+    locked: match.locked,
+    played: match.played,
+    notes: match.notes,
+  }
 }
 
-export async function listPlayers(supabase: SupabaseClient): Promise<Player[]> {
-  return check(await supabase.from("players").select(PLAYER_COLUMNS).order("name")) as Player[]
+function findMatch(doc: Doc, id: string): { match: StoredMatch; date: string } | null {
+  for (const [date, session] of Object.entries(doc.sessions)) {
+    const match = session.matches.find((m) => m.id === id)
+    if (match) return { match, date }
+  }
+  return null
 }
 
-export async function createPlayer(supabase: SupabaseClient, input: PlayerCreate): Promise<Player> {
-  return check(await supabase.from("players").insert(input).select(PLAYER_COLUMNS).single()) as Player
+export async function listPlayers(store: DocStore): Promise<Player[]> {
+  const { doc } = await store.read()
+  return [...doc.players].sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }))
 }
 
-/** Returns null when the player does not exist or belongs to someone else. */
-export async function updatePlayer(supabase: SupabaseClient, id: string, patch: PlayerPatch): Promise<Player | null> {
-  return check(await supabase.from("players").update(patch).eq("id", id).select(PLAYER_COLUMNS).maybeSingle()) as Player | null
+export async function createPlayer(store: DocStore, input: PlayerCreate): Promise<Player> {
+  return mutate(store, (doc) => {
+    const name = input.name.trim()
+    if (doc.players.some((p) => nameKey(p.name) === nameKey(name))) throw new ApiError(409, "conflict")
+    const player: Player = {
+      id: crypto.randomUUID(),
+      name,
+      skill_level: input.skill_level,
+      active: true,
+      created_at: new Date().toISOString(),
+    }
+    doc.players.push(player)
+    return player
+  })
 }
 
-export async function countOwnedPlayers(supabase: SupabaseClient, ids: string[]): Promise<number> {
-  if (ids.length === 0) return 0
-  const rows = check(await supabase.from("players").select("id").in("id", ids)) as { id: string }[]
-  return rows.length
+/** Returns null when the player does not exist. */
+export async function updatePlayer(store: DocStore, id: string, patch: PlayerPatch): Promise<Player | null> {
+  return mutate(store, (doc) => {
+    const player = doc.players.find((p) => p.id === id)
+    if (!player) return null
+    if (patch.name !== undefined) {
+      const name = patch.name.trim()
+      if (doc.players.some((p) => p.id !== id && nameKey(p.name) === nameKey(name))) throw new ApiError(409, "conflict")
+      player.name = name
+    }
+    if (patch.skill_level !== undefined) player.skill_level = patch.skill_level
+    if (patch.active !== undefined) player.active = patch.active
+    return { ...player }
+  })
 }
 
-export async function getSession(supabase: SupabaseClient, date: string): Promise<SavedSession | null> {
-  const session = check(await supabase.from("sessions").select("id").eq("session_date", date).maybeSingle()) as {
-    id: string
-  } | null
+export async function getSession(store: DocStore, date: string): Promise<SavedSession | null> {
+  const { doc } = await store.read()
+  return toSavedSession(doc, date)
+}
+
+function toSavedSession(doc: Doc, date: string): SavedSession | null {
+  const session = doc.sessions[date]
   if (!session) return null
-
-  const [participants, matches] = await Promise.all([
-    supabase.from("session_players").select("player_id").eq("session_id", session.id),
-    supabase.from("session_matches").select(MATCH_COLUMNS).eq("session_id", session.id).order("position"),
-  ])
   return {
     date,
-    participants: (check(participants) as { player_id: string }[]).map((r) => r.player_id),
-    matches: (check(matches) as MatchRow[]).map(toSavedMatch),
+    participants: [...session.participants],
+    matches: [...session.matches].sort((a, b) => a.position - b.position).map(toSavedMatch),
   }
 }
 
-export async function saveSessionDraft(supabase: SupabaseClient, date: string, draft: SessionDraftInput): Promise<void> {
-  check(
-    await supabase.rpc("save_session_draft", {
-      p_date: date,
-      p_participants: draft.participants,
-      p_matches: draft.matches,
-    }),
-  )
+/**
+ * Replaces the participant list and the unplayed matches of a date; played matches are history and stay.
+ * New matches are appended after the highest kept position.
+ */
+export async function saveSessionDraft(store: DocStore, date: string, draft: SessionDraftInput): Promise<SavedSession> {
+  return mutate(store, (doc) => {
+    const known = new Set(doc.players.map((p) => p.id))
+    if (!draft.participants.every((id) => known.has(id))) throw new ApiError(422, "invalid_players")
+
+    const participants = new Set(draft.participants)
+    for (const match of draft.matches) {
+      const ids = [...match.team1, ...match.team2]
+      if (new Set(ids).size !== 4 || !ids.every((id) => participants.has(id))) throw new ApiError(400, "invalid_request")
+    }
+
+    const kept = (doc.sessions[date]?.matches ?? []).filter((m) => m.played)
+    for (const match of kept) {
+      if (![...match.team1, ...match.team2].every((id) => participants.has(id))) throw new ApiError(409, "in_use")
+    }
+
+    const base = kept.reduce((max, m) => Math.max(max, m.position + 1), 0)
+    const now = new Date().toISOString()
+    const added: StoredMatch[] = draft.matches.map((m, i) => ({
+      id: crypto.randomUUID(),
+      position: base + i,
+      team1: [m.team1[0], m.team1[1]],
+      team2: [m.team2[0], m.team2[1]],
+      locked: m.locked,
+      played: false,
+      notes: null,
+      created_at: now,
+    }))
+    doc.sessions[date] = { participants: [...draft.participants], matches: [...kept, ...added], updated_at: now }
+    return toSavedSession(doc, date)!
+  })
 }
 
-/** Returns null when the match does not exist or belongs to someone else. */
-export async function setMatchPlayed(supabase: SupabaseClient, id: string, patch: MatchPatch): Promise<SavedMatch | null> {
-  const row = check(
-    await supabase.from("session_matches").update(patch).eq("id", id).select(MATCH_COLUMNS).maybeSingle(),
-  ) as MatchRow | null
-  return row ? toSavedMatch(row) : null
+/** Returns null when the match does not exist. Notes are cleared when none are supplied. */
+export async function setMatchPlayed(store: DocStore, id: string, patch: MatchPatch): Promise<SavedMatch | null> {
+  return mutate(store, (doc) => {
+    const found = findMatch(doc, id)
+    if (!found) return null
+    found.match.played = patch.played
+    found.match.notes = patch.notes ?? null
+    return toSavedMatch(found.match)
+  })
 }
 
-export async function listHistory(supabase: SupabaseClient): Promise<MatchHistory[]> {
-  const played = check(
-    await supabase.from("session_matches").select(MATCH_COLUMNS).eq("played", true),
-  ) as MatchRow[]
-  if (played.length === 0) return []
-  const sessions = check(await supabase.from("sessions").select("id, session_date")) as { id: string; session_date: string }[]
-  const dateById = new Map(sessions.map((s) => [s.id, s.session_date]))
-  return played
-    .filter((m) => dateById.has(m.session_id))
-    .map((m) => toMatchHistory(m, dateById.get(m.session_id)!))
-    .sort((a, b) => b.played_at.localeCompare(a.played_at))
-}
-
-function toSavedMatch(row: MatchRow): SavedMatch {
-  return {
-    id: row.id,
-    position: row.position,
-    team1: [row.team1_player1_id, row.team1_player2_id],
-    team2: [row.team2_player1_id, row.team2_player2_id],
-    locked: row.locked,
-    played: row.played,
-    notes: row.notes,
+export async function listHistory(store: DocStore): Promise<MatchHistory[]> {
+  const { doc } = await store.read()
+  const rows: { history: MatchHistory; position: number }[] = []
+  for (const [date, session] of Object.entries(doc.sessions)) {
+    for (const match of session.matches) {
+      if (!match.played) continue
+      rows.push({
+        history: toMatchHistory(
+          {
+            id: match.id,
+            notes: match.notes,
+            created_at: match.created_at,
+            team1_player1_id: match.team1[0],
+            team1_player2_id: match.team1[1],
+            team2_player1_id: match.team2[0],
+            team2_player2_id: match.team2[1],
+          },
+          date,
+        ),
+        position: match.position,
+      })
+    }
   }
+  // Newest session first; within a day the later match first.
+  rows.sort((a, b) => b.history.played_at.localeCompare(a.history.played_at) || b.position - a.position)
+  return rows.map((r) => r.history)
 }

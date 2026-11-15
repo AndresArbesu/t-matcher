@@ -20,29 +20,22 @@ export class ApiError extends Error {
   }
 }
 
-const POSTGRES_CODES: Record<string, ApiError> = {
-  "23505": new ApiError(409, "conflict"),
-  "23503": new ApiError(409, "in_use"),
-  "23514": new ApiError(400, "invalid_request"),
-  "22P02": new ApiError(400, "invalid_request"),
-  "42501": new ApiError(403, "forbidden"),
+/** A class name only (SDK errors keep `name` as "Error"); never the message, which could carry secrets. */
+export function errorName(error: unknown): string {
+  return error instanceof Error ? error.constructor.name || error.name : typeof error
 }
 
 /**
- * Converts anything thrown into a response with a fixed error code. Provider
- * (Supabase/Postgres) messages, details and hints are only logged server-side
- * as a code, never returned.
+ * Converts anything thrown into a response with a fixed error code. Storage
+ * (Blob) errors and their messages are only logged server-side as a name, never returned.
  */
 export function toErrorResponse(error: unknown): NextResponse {
-  let apiError: ApiError | undefined
+  let apiError: ApiError
   if (error instanceof ApiError) {
     apiError = error
-  } else if (typeof error === "object" && error !== null && "code" in error) {
-    apiError = POSTGRES_CODES[String((error as { code: unknown }).code)]
-  }
-  if (!apiError) {
-    console.error("Unhandled API error", error instanceof Error ? error.name : typeof error)
+  } else {
+    console.error("Unhandled API error", errorName(error))
     apiError = new ApiError(500, "server_error")
   }
-  return NextResponse.json({ error: apiError.code }, { status: apiError.status })
+  return NextResponse.json({ error: apiError.code }, { status: apiError.status, headers: { "Cache-Control": "no-store" } })
 }

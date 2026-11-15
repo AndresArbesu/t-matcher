@@ -31,6 +31,9 @@ async function request<T>(url: string, method = "GET", body?: unknown): Promise<
 }
 
 export const api = {
+  checkSession: () => request<{ ok: true }>("/api/session"),
+  login: (passcode: string) => request<{ ok: true }>("/api/login", "POST", { passcode }),
+  logout: () => request<{ ok: true }>("/api/logout", "POST"),
   listPlayers: () => request<Player[]>("/api/players"),
   createPlayer: (input: PlayerCreate) => request<Player>("/api/players", "POST", input),
   deactivatePlayer: (id: string) => request<Player>(`/api/players/${id}`, "DELETE"),
