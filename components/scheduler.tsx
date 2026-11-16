@@ -17,7 +17,7 @@ import type { MatchHistory, Player, SavedMatch, SavedSession } from "@/lib/types
 import { MAX_SKILL, MIN_SKILL } from "@/lib/validation"
 
 const SKILL_LEVELS = Array.from({ length: MAX_SKILL - MIN_SKILL + 1 }, (_, i) => MIN_SKILL + i)
-const DEFAULT_SKILL = 3
+const DEFAULT_SKILL = 2
 
 interface SchedulerProps {
   language: "en" | "es"
@@ -78,7 +78,7 @@ export function Scheduler({ language, isDarkMode }: SchedulerProps) {
 
   /** Replaces the editable state with what the server has stored for the session. */
   const applySession = (session: SavedSession | null, knownPlayers = players, knownHistory = matchHistory) => {
-    const analyzer = new MatchAnalyzer(knownHistory, knownPlayers)
+    const analyzer = new MatchAnalyzer(knownHistory, knownPlayers, { referenceDate: sessionDate })
     const draft = session ? hydrateDraft(session.matches, new Map(knownPlayers.map((p) => [p.id, p])), analyzer) : []
     setSavedMatches(session?.matches ?? [])
     setSelectedPlayers(new Set(session?.participants ?? []))
@@ -165,7 +165,7 @@ export function Scheduler({ language, isDarkMode }: SchedulerProps) {
     setIsLoading(true)
     setNotice(null)
     try {
-      const analyzer = new MatchAnalyzer(matchHistory, players)
+      const analyzer = new MatchAnalyzer(matchHistory, players, { referenceDate: sessionDate })
       const arrangements = analyzer.generateCompleteArrangements(chosen, 3)
       setDrafts(arrangements.map((arrangement) => withLocks(arrangement.matches)))
     } catch (error) {
@@ -176,11 +176,11 @@ export function Scheduler({ language, isDarkMode }: SchedulerProps) {
     }
   }
 
-  const formatDaysAgo = (days: number): string => {
-    if (days < 0) return t.never
-    if (days < 1) return t.today
-    if (days < 2) return t.yesterday
-    return `${Math.floor(days)} ${t.daysAgo}`
+  /** Repeats are counted in sessions (played dates), so this never says anything about days. */
+  const formatSessionsAgo = (sessions: number): string => {
+    if (sessions < 1) return t.never
+    if (sessions === 1) return t.lastSession
+    return t.sessionsAgo(sessions)
   }
 
   const getScoreColor = (score: number): string => {
@@ -201,7 +201,7 @@ export function Scheduler({ language, isDarkMode }: SchedulerProps) {
   const regenerateWithFixedMatches = (draftIndex: number) => {
     setNotice(null)
     try {
-      const analyzer = new MatchAnalyzer(matchHistory, players)
+      const analyzer = new MatchAnalyzer(matchHistory, players, { referenceDate: sessionDate })
       const chosen = players.filter((p) => selectedPlayers.has(p.id))
       const next = regenerateUnlocked(analyzer, chosen, drafts[draftIndex])
       setDrafts(drafts.map((draft, i) => (i === draftIndex ? next : draft)))
@@ -338,7 +338,7 @@ export function Scheduler({ language, isDarkMode }: SchedulerProps) {
                   <span id="skillLevelLabel" className={`text-sm font-medium ${isDarkMode ? "text-slate-200" : "text-slate-700"}`}>
                     {t.skillLevel}
                   </span>
-                  <div role="radiogroup" aria-labelledby="skillLevelLabel" className="mt-2 grid grid-cols-5 gap-1.5 sm:flex">
+                  <div role="radiogroup" aria-labelledby="skillLevelLabel" className="mt-2 grid grid-cols-3 gap-1.5 sm:flex">
                     {SKILL_LEVELS.map((level) => {
                       const on = level === newPlayerSkill
                       return (
@@ -361,6 +361,7 @@ export function Scheduler({ language, isDarkMode }: SchedulerProps) {
                       )
                     })}
                   </div>
+                  <p className={`mt-1 text-xs ${isDarkMode ? "text-slate-400" : "text-slate-600"}`}>{t.skillHint}</p>
                 </div>
                 <Button type="submit" className="w-full min-h-11 bg-blue-600 hover:bg-blue-700 text-white sm:w-auto">
                   {t.addPlayer}
@@ -562,8 +563,8 @@ export function Scheduler({ language, isDarkMode }: SchedulerProps) {
                               </label>
                             </div>
                             <p className={`mb-3 text-sm ${isDarkMode ? "text-slate-400" : "text-slate-600"}`}>
-                              {t.skillDiff}: {match.skillDifference} | {t.last}:{" "}
-                              {formatDaysAgo(match.analysis?.lastPlayedDays ?? -1)}
+                              {t.skillDiff}: {match.skillDifference} | {t.lastRepeat}:{" "}
+                              {formatSessionsAgo(match.analysis?.lastPlayedSessions ?? -1)}
                             </p>
 
                             <div className="grid grid-cols-2 gap-3 sm:gap-4">
@@ -682,6 +683,7 @@ export function Scheduler({ language, isDarkMode }: SchedulerProps) {
                 <p className="text-sm">
                   <strong>{t.example}</strong> {t.exampleDesc}
                 </p>
+                <p className="text-sm mt-2">{t.capsDesc}</p>
                 <p className="text-sm mt-2">{t.samplingDesc}</p>
               </div>
             </CardContent>

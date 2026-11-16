@@ -298,17 +298,17 @@ describe("responses", () => {
 describe("players", () => {
   it("lists and creates players", async () => {
     expect(await (await playersRoute.GET(req("GET"), ctx())).json()).toEqual([])
-    const res = await playersRoute.POST(req("POST", { body: { name: " Bo ", skill_level: 4, owner_id: id(9) } }), ctx())
+    const res = await playersRoute.POST(req("POST", { body: { name: " Bo ", skill_level: 2, owner_id: id(9) } }), ctx())
     expect(res.status).toBe(201)
     const player = await res.json()
-    expect(player).toMatchObject({ name: "Bo", skill_level: 4, active: true })
+    expect(player).toMatchObject({ name: "Bo", skill_level: 2, active: true })
     expect(player).not.toHaveProperty("owner_id")
     expect(await (await playersRoute.GET(req("GET"), ctx())).json()).toEqual([player])
   })
 
-  it("rejects invalid or non-JSON bodies with 400 and a level above 5", async () => {
+  it("rejects invalid or non-JSON bodies with 400 and a level above 3", async () => {
     expect((await playersRoute.POST(req("POST", { body: { name: "", skill_level: 3 } }), ctx())).status).toBe(400)
-    expect((await playersRoute.POST(req("POST", { body: { name: "Ana", skill_level: 6 } }), ctx())).status).toBe(400)
+    expect((await playersRoute.POST(req("POST", { body: { name: "Ana", skill_level: 4 } }), ctx())).status).toBe(400)
     expect((await playersRoute.POST(req("POST", { body: { name: "Ana", skill_level: 0 } }), ctx())).status).toBe(400)
     expect((await playersRoute.POST(req("POST", { raw: "{nope" }), ctx())).status).toBe(400)
     expect(store.writes).toBe(0)
@@ -331,8 +331,8 @@ describe("players", () => {
 
   it("PATCH updates; 404s for unknown players; 400s for malformed ids and empty patches", async () => {
     const ana = await createPlayer(store, { name: "Ana", skill_level: 3 })
-    const ok = await playerRoute.PATCH(req("PATCH", { body: { skill_level: 5 } }), ctx({ id: ana.id }))
-    expect(await ok.json()).toMatchObject({ skill_level: 5 })
+    const ok = await playerRoute.PATCH(req("PATCH", { body: { skill_level: 1 } }), ctx({ id: ana.id }))
+    expect(await ok.json()).toMatchObject({ skill_level: 1 })
     expect((await playerRoute.PATCH(req("PATCH", { body: { name: "Z" } }), ctx({ id: id(7) }))).status).toBe(404)
     expect((await playerRoute.PATCH(req("PATCH", { body: { name: "Z" } }), ctx({ id: "not-a-uuid" }))).status).toBe(400)
     expect((await playerRoute.PATCH(req("PATCH", { body: {} }), ctx({ id: ana.id }))).status).toBe(400)

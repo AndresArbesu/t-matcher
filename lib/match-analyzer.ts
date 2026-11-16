@@ -4,7 +4,9 @@ export interface MatchAnalysis {
   rivalPairCount: number
   individualRivalCount: number
   ownPairCount: number
-  lastPlayedDays: number
+  /** How many sessions ago the most recent repeat happened (1 = the last session); -1 when nothing repeats. */
+  lastPlayedSessions: number
+  /** True when a repeat happened in the last session. */
   isRecentlyPlayed: boolean
 }
 
@@ -29,33 +31,64 @@ export interface Arrangement {
 /**
  * Scoring weights. Lower total score is better. Every number that shapes a
  * suggestion lives here so the rules can be read (and tuned) in one place.
+ *
+ * Priorities:
+ * 1. Balance. Repeated partners and rivals, at their capped worst and however
+ *    recent, cost less than one level of gap.
+ * 2. Not replaying the match of the last session. One such rematch costs more
+ *    than one level of gap and less than two, so a gap of 1 is accepted to
+ *    avoid it and a gap of 2 or more never is.
+ * 3. Fresh partners and rivals.
+ * Repeat counts are capped, so a long history adds only a bounded amount and
+ * never buries the skill term; history never expires, it just weighs less.
+ *
+ * Recency is counted in sessions (distinct played dates), never in days: the
+ * group plays when it plays, and the calendar gap between dates is irrelevant.
  */
 export interface ScoringRules {
-  /** Points per skill point of difference between the two teams' summed skill. */
+  /** Points per level of difference between the two teams' summed skill. */
   skillDifferenceWeight: number
-  /** Per earlier match with exactly the same two teams facing each other. */
+  /** Per earlier time exactly the same two teams faced each other (capped by `maxCountedRematches`). */
   rivalPairPenalty: number
-  /** Per opposing player pair that also stood on opposite sides in an earlier match. */
+  /** Per opposing player pair, per earlier time the two stood on opposite sides (capped by `maxCountedRivalMeetings`). */
   individualRivalPenalty: number
-  /** Per earlier match in which either current team was already a team. */
+  /** Per current team, per earlier time its two players were partners (capped by `maxCountedPartnerships`). */
   ownPairPenalty: number
-  /** A repeat counts as "recent" when the latest one was at most this many days ago. */
-  recentWindowDays: number
-  /** Multiplier applied to the three repeat penalties above when the repeat is recent. */
+  /** A repeat is "recent" when its latest occurrence is at most this many sessions before the one being planned (1 = the last session). */
+  recentSessions: number
+  /** A repeat is "near" when it is recent or at most this many sessions back (2 = the last two sessions). */
+  nearSessions: number
+  /** Multiplier applied to each repeat item whose own latest occurrence is recent. */
   recentMultiplier: number
-  /** Flat extra penalty when any repeat is recent. */
+  /** Multiplier applied to each repeat item whose own latest occurrence is near but not recent. Older items count x1. */
+  nearMultiplier: number
+  /** Flat extra penalty, charged once, when any repeat item is recent; half of it when the closest is only near. */
   recentPlayPenalty: number
+  /** Most earlier rematches of the same two teams that are charged. */
+  maxCountedRematches: number
+  /** Most earlier meetings of the same opposing pair that are charged. */
+  maxCountedRivalMeetings: number
+  /** Most earlier partnerships of the same pair that are charged. */
+  maxCountedPartnerships: number
 }
 
 export const DEFAULT_RULES: ScoringRules = {
-  skillDifferenceWeight: 10,
-  rivalPairPenalty: 1000,
-  individualRivalPenalty: 500,
-  ownPairPenalty: 300,
-  recentWindowDays: 7,
+  skillDifferenceWeight: 1000,
+  rivalPairPenalty: 200,
+  individualRivalPenalty: 25,
+  ownPairPenalty: 20,
+  recentSessions: 1,
+  nearSessions: 2,
   recentMultiplier: 3,
-  recentPlayPenalty: 2000,
+  nearMultiplier: 2,
+  recentPlayPenalty: 100,
+  maxCountedRematches: 2,
+  maxCountedRivalMeetings: 2,
+  maxCountedPartnerships: 2,
 }
+
+/** The flat penalty when the closest repeat is only "near": half the recent one. */
+export const nearPlayPenalty = (rules: ScoringRules): number => rules.recentPlayPenalty / 2
 
 /** Limits on how hard the generator searches for complete schedules. */
 export interface SamplingLimits {
@@ -68,7 +101,7 @@ export interface SamplingLimits {
 }
 
 export const DEFAULT_SAMPLING: SamplingLimits = {
-  maxSamples: 400,
+  maxSamples: 2000,
   maxCandidates: 3,
   minDistinctMatches: 2,
 }
@@ -78,20 +111,48 @@ export interface MatchAnalyzerOptions {
   sampling?: Partial<SamplingLimits>
   /** Source of randomness in [0, 1); inject a seeded one in tests. */
   rng?: () => number
-  /** Clock in epoch milliseconds; inject a fixed one in tests. */
+  /**
+   * The session being planned, "YYYY-MM-DD". History rows before it are the earlier sessions, counted back from it.
+   * Defaults to the UTC date of `now`.
+   */
+  referenceDate?: string
+  /** Clock in epoch milliseconds, used only to default `referenceDate`; inject a fixed one in tests. */
   now?: () => number
 }
 
 type Team = readonly [Player, Player]
 type Pairing = { team1: Team; team2: Team }
 
-const teamKey = (team: Team) => (team[0].id < team[1].id ? `${team[0].id}+${team[1].id}` : `${team[1].id}+${team[0].id}`)
+const pairKey = (a: string, b: string) => (a < b ? `${a}+${b}` : `${b}+${a}`)
+const teamKey = (team: Team) => pairKey(team[0].id, team[1].id)
+const matchKeyOf = (a: string, b: string) => (a < b ? `${a}|${b}` : `${b}|${a}`)
+
+/** The first 10 characters of "YYYY-MM-DD…" when they are a real date, else null. ISO dates sort as text. */
+function isoDate(value: string | undefined): string | null {
+  const head = (value ?? "").slice(0, 10)
+  return /^\d{4}-\d{2}-\d{2}$/.test(head) && !Number.isNaN(Date.parse(`${head}T00:00:00Z`)) ? head : null
+}
+
+/** How often something happened in the history, and how many sessions back its latest occurrence is. */
+interface Tally {
+  times: number
+  /** Sessions ago of the most recent occurrence (1 = the last session); infinite when no row had a usable date. */
+  latest: number
+}
+
+function bump(map: Map<string, Tally>, key: string, sessionsAgo: number) {
+  const tally = map.get(key)
+  if (tally) {
+    tally.times++
+    tally.latest = Math.min(tally.latest, sessionsAgo)
+  } else {
+    map.set(key, { times: 1, latest: sessionsAgo })
+  }
+}
 
 /** One key for a match regardless of player order inside teams or which team is listed first. */
 export function canonicalMatchKey(match: Pairing): string {
-  const a = teamKey(match.team1)
-  const b = teamKey(match.team2)
-  return a < b ? `${a}|${b}` : `${b}|${a}`
+  return matchKeyOf(teamKey(match.team1), teamKey(match.team2))
 }
 
 /** One key for a whole schedule regardless of match order. */
@@ -108,125 +169,140 @@ function scheduleSpaceSize(n: number): number {
 }
 
 /**
- * Analyzes match history to score suggestions based on user's rules:
- * 1. Least skill difference (lower is better)
- * 2. No repeated rival pairs
- * 3. No repeated individual rivals
- * 4. No repeated own pairs
- * Priority: Recent matches (last week) get higher penalty
+ * Scores matches against the played history, in this order of importance:
+ * 1. Balance: the gap between the two teams' summed skill.
+ * 2. No repeats: an exact rematch, opposing pairs that already met, partners
+ *    that already paired up. Each repeat item is capped and weighed by how
+ *    many sessions ago its own latest occurrence was (x3 last session, x2 the
+ *    one before, x1 older).
+ *
+ * Sessions are the distinct played dates before the reference date, newest
+ * first. A row dated on the reference date itself belongs to the session being
+ * planned and counts as 1 session ago; rows dated after it are ignored.
+ *
+ * The history is indexed once, here, by player pair and by pair of teams, so
+ * scoring a candidate is a handful of map lookups however long the history is.
  */
 export class MatchAnalyzer {
-  private matchHistory: MatchHistory[]
   private players: Player[]
   private rules: ScoringRules
   private sampling: SamplingLimits
   private rng: () => number
-  private now: () => number
+  /** Times two players were on the same team. */
+  private partnerTimes = new Map<string, Tally>()
+  /** Times two players were on opposite teams. */
+  private opposedTimes = new Map<string, Tally>()
+  /** Times these exact two teams played each other. */
+  private rematchTimes = new Map<string, Tally>()
 
   constructor(matchHistory: MatchHistory[], players: Player[], options: MatchAnalyzerOptions = {}) {
-    this.matchHistory = matchHistory
     this.players = players
     this.rules = options.rules ?? DEFAULT_RULES
     this.sampling = { ...DEFAULT_SAMPLING, ...options.sampling }
     this.rng = options.rng ?? Math.random
-    this.now = options.now ?? Date.now
+
+    const reference = isoDate(options.referenceDate) ?? new Date((options.now ?? Date.now)()).toISOString().slice(0, 10)
+
+    // Sessions are the distinct played dates strictly before the session being planned, newest first
+    const dated = matchHistory.map((row) => ({ row, date: isoDate(row.played_at) }))
+    const earlier = [...new Set(dated.flatMap(({ date }) => (date !== null && date < reference ? [date] : [])))].sort().reverse()
+    const sessionsAgo = new Map(earlier.map((date, i) => [date, i + 1]))
+
+    for (const { row, date } of dated) {
+      // Later than the session being planned: not part of its past. A row without a usable date is as old as it gets.
+      if (date !== null && date > reference) continue
+      const age = date === null ? Number.POSITIVE_INFINITY : (sessionsAgo.get(date) ?? 1) // the session's own date is the latest session
+
+      const team1 = [row.team1_player1_id, row.team1_player2_id]
+      const team2 = [row.team2_player1_id, row.team2_player2_id]
+      const key1 = pairKey(team1[0], team1[1])
+      const key2 = pairKey(team2[0], team2[1])
+
+      bump(this.partnerTimes, key1, age)
+      bump(this.partnerTimes, key2, age)
+      bump(this.rematchTimes, matchKeyOf(key1, key2), age)
+      for (const a of team1) for (const b of team2) bump(this.opposedTimes, pairKey(a, b), age)
+    }
   }
 
   /**
-   * Analyzes a potential match against historical data.
+   * Looks a candidate up in the history indexes.
    *
-   * An individual rival encounter is an opposing player pair (one from each
-   * team) that also stood on opposite sides in an earlier match. Pairs that
-   * were partners before do not count, and an exact team rematch is counted
-   * only as a rival pair so the same meeting is never penalised twice.
+   * Three kinds of repeat are counted, each from its own index: the exact two
+   * teams meeting again, each of the four opposing pairs meeting again, and
+   * each of the two teams partnering again. They are independent, so an exact
+   * rematch also incurs the four opposing pairs and both partnerships it
+   * contains and therefore always costs more than its parts. Counts in
+   * `analysis` are raw (for display); the penalties use the capped counts.
    */
-  analyzeMatch(team1: [Player, Player], team2: [Player, Player]): MatchAnalysis {
-    const team1Ids = team1.map((p) => p.id).sort()
-    const team2Ids = team2.map((p) => p.id).sort()
+  private inspect(team1: [Player, Player], team2: [Player, Player]) {
+    const { rules } = this
+    let recent = false
+    let near = false
+    let latest = Number.POSITIVE_INFINITY
 
-    let rivalPairCount = 0
+    /** Weighted, capped cost of one repeat item, scaled by how many sessions ago that item's own latest occurrence was. */
+    const charge = (tally: Tally | undefined, weight: number, cap: number): number => {
+      if (!tally) return 0
+      latest = Math.min(latest, tally.latest)
+      let multiplier = 1
+      if (tally.latest <= rules.recentSessions) {
+        recent = true
+        multiplier = rules.recentMultiplier
+      } else if (tally.latest <= rules.nearSessions) {
+        near = true
+        multiplier = rules.nearMultiplier
+      }
+      return weight * Math.min(tally.times, cap) * multiplier
+    }
+
+    const key1 = teamKey(team1)
+    const key2 = teamKey(team2)
+
+    const rematch = this.rematchTimes.get(matchKeyOf(key1, key2))
+    const rivalPairPenalty = charge(rematch, rules.rivalPairPenalty, rules.maxCountedRematches)
+
     let individualRivalCount = 0
-    let ownPairCount = 0
-    let lastPlayedDays = Number.POSITIVE_INFINITY
-
-    for (const match of this.matchHistory) {
-      const daysAgo = (this.now() - new Date(match.played_at).getTime()) / (1000 * 60 * 60 * 24)
-
-      // Get teams from historical match
-      const historicalTeam1 = [match.team1_player1_id, match.team1_player2_id].sort()
-      const historicalTeam2 = [match.team2_player1_id, match.team2_player2_id].sort()
-
-      // Check if exact rival pairs match
-      const exactRematch =
-        (this.arraysEqual(team1Ids, historicalTeam2) && this.arraysEqual(team2Ids, historicalTeam1)) ||
-        (this.arraysEqual(team1Ids, historicalTeam1) && this.arraysEqual(team2Ids, historicalTeam2))
-
-      if (exactRematch) {
-        rivalPairCount++
-        lastPlayedDays = Math.min(lastPlayedDays, daysAgo)
-      }
-
-      // Check if own pairs match
-      const ownPair1Matches = this.arraysEqual(team1Ids, historicalTeam1) || this.arraysEqual(team1Ids, historicalTeam2)
-      const ownPair2Matches = this.arraysEqual(team2Ids, historicalTeam1) || this.arraysEqual(team2Ids, historicalTeam2)
-
-      if (ownPair1Matches || ownPair2Matches) {
-        ownPairCount++
-        lastPlayedDays = Math.min(lastPlayedDays, daysAgo)
-      }
-
-      // Individual rivals: opposing pairs that were also opposed before (never former partners)
-      if (!exactRematch) {
-        let opposedBefore = 0
-        for (const a of team1Ids) {
-          for (const b of team2Ids) {
-            const opposed =
-              (historicalTeam1.includes(a) && historicalTeam2.includes(b)) ||
-              (historicalTeam2.includes(a) && historicalTeam1.includes(b))
-            if (opposed) opposedBefore++
-          }
-        }
-        if (opposedBefore > 0) {
-          individualRivalCount += opposedBefore
-          lastPlayedDays = Math.min(lastPlayedDays, daysAgo)
-        }
+    let individualRivalPenalty = 0
+    for (const a of team1) {
+      for (const b of team2) {
+        const tally = this.opposedTimes.get(pairKey(a.id, b.id))
+        individualRivalCount += tally?.times ?? 0
+        individualRivalPenalty += charge(tally, rules.individualRivalPenalty, rules.maxCountedRivalMeetings)
       }
     }
 
-    return {
-      rivalPairCount,
+    const partners1 = this.partnerTimes.get(key1)
+    const partners2 = this.partnerTimes.get(key2)
+    const ownPairPenalty =
+      charge(partners1, rules.ownPairPenalty, rules.maxCountedPartnerships) + charge(partners2, rules.ownPairPenalty, rules.maxCountedPartnerships)
+
+    const analysis: MatchAnalysis = {
+      rivalPairCount: rematch?.times ?? 0,
       individualRivalCount,
-      ownPairCount,
-      lastPlayedDays: lastPlayedDays === Number.POSITIVE_INFINITY ? -1 : lastPlayedDays,
-      isRecentlyPlayed: lastPlayedDays <= this.rules.recentWindowDays,
+      ownPairCount: (partners1?.times ?? 0) + (partners2?.times ?? 0),
+      lastPlayedSessions: Number.isFinite(latest) ? latest : -1,
+      isRecentlyPlayed: recent,
     }
+    // Once per match: in full when anything repeats from the last session, half when the closest is the one before
+    const recentPlayPenalty = recent ? rules.recentPlayPenalty : near ? nearPlayPenalty(rules) : 0
+    return { analysis, rivalPairPenalty, individualRivalPenalty, ownPairPenalty, recentPlayPenalty }
   }
 
-  /**
-   * Scores a match suggestion based on the analysis
-   * Lower scores are better (higher priority)
-   */
+  /** Analyzes a potential match against historical data. */
+  analyzeMatch(team1: [Player, Player], team2: [Player, Player]): MatchAnalysis {
+    return this.inspect(team1, team2).analysis
+  }
+
+  /** Scores a match suggestion. Lower scores are better. */
   scoreMatch(team1: [Player, Player], team2: [Player, Player]): ScoredSuggestion {
-    const analysis = this.analyzeMatch(team1, team2)
+    const { analysis, rivalPairPenalty, individualRivalPenalty, ownPairPenalty, recentPlayPenalty } = this.inspect(team1, team2)
 
-    // Calculate skill difference (Rule 1: Suma menor puntos de DIF de habilidad)
-    const team1Skill = team1[0].skill_level + team1[1].skill_level
-    const team2Skill = team2[0].skill_level + team2[1].skill_level
-    const skillDifference = Math.abs(team1Skill - team2Skill)
-
-    // Scoring system (lower is better)
-    const { rules } = this
-    const skillScore = skillDifference * rules.skillDifferenceWeight // Base score from skill difference
-
-    // Penalties for repetition (higher penalties for more recent matches)
-    const recentMultiplier = analysis.isRecentlyPlayed ? rules.recentMultiplier : 1
-
-    const rivalPairPenalty = analysis.rivalPairCount * rules.rivalPairPenalty * recentMultiplier // Rule 2: Highest penalty
-    const individualRivalPenalty = analysis.individualRivalCount * rules.individualRivalPenalty * recentMultiplier // Rule 3
-    const ownPairPenalty = analysis.ownPairCount * rules.ownPairPenalty * recentMultiplier // Rule 4
-    const recentPlayPenalty = analysis.isRecentlyPlayed ? rules.recentPlayPenalty : 0 // Extra penalty for recent play
-
-    const totalScore = skillScore + rivalPairPenalty + individualRivalPenalty + ownPairPenalty + recentPlayPenalty
+    // Only the gap between the summed levels is used, so it makes no difference
+    // whether 1 or 3 is the strongest level: the scale could be flipped without
+    // changing any score.
+    const skillDifference = Math.abs(team1[0].skill_level + team1[1].skill_level - team2[0].skill_level - team2[1].skill_level)
+    const skillScore = skillDifference * this.rules.skillDifferenceWeight
 
     return {
       team1,
@@ -234,7 +310,7 @@ export class MatchAnalyzer {
       skillDifference,
       recentlyPlayed: analysis.isRecentlyPlayed,
       analysis,
-      totalScore,
+      totalScore: skillScore + rivalPairPenalty + individualRivalPenalty + ownPairPenalty + recentPlayPenalty,
       breakdown: {
         skillScore,
         rivalPairPenalty,
@@ -395,9 +471,5 @@ export class MatchAnalyzer {
       if (!chosen.includes(candidate)) chosen.push(candidate)
     }
     return chosen.sort((a, b) => a.totalScore - b.totalScore)
-  }
-
-  private arraysEqual(a: string[], b: string[]): boolean {
-    return a.length === b.length && a.every((val, i) => val === b[i])
   }
 }

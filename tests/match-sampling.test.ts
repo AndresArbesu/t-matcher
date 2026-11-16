@@ -4,7 +4,7 @@ import type { MatchHistory, Player } from "@/lib/types"
 
 const NOW = Date.parse("2026-11-15T12:00:00Z")
 const roster = (skills: number[]): Player[] => skills.map((skill_level, i) => ({ id: `p${i + 1}`, name: `P${i + 1}`, skill_level, active: true }))
-const cycleSkills = (n: number) => Array.from({ length: n }, (_, i) => (i % 5) + 1)
+const cycleSkills = (n: number) => Array.from({ length: n }, (_, i) => (i % 3) + 1)
 const idsOf = (m: { team1: Player[]; team2: Player[] }) => [...m.team1, ...m.team2].map((p) => p.id)
 type Pair = [Player, Player]
 
@@ -110,7 +110,8 @@ describe("complete schedule sampling", () => {
   })
 
   it("ranks by FULL schedule score: finds the optimum that greedy match-by-match picking misses", () => {
-    const ps = roster([5, 4, 3, 3, 2, 1, 1, 5])
+    // greedy takes the first gap-0 match (2+2 vs 3+1), which strands 3,1,1,1; regrouping 2+3 vs 2+3 and 1+1 vs 1+1 reaches 0
+    const ps = roster([2, 2, 3, 3, 1, 1, 1, 1])
     const analyzer = new MatchAnalyzer([], ps, { rng: mulberry32(3), now: () => NOW })
 
     // greedy baseline: repeatedly take the single best match among the remaining players (first wins ties)
@@ -130,8 +131,8 @@ describe("complete schedule sampling", () => {
   })
 
   it("matches an exhaustive search over all 315 schedules of 8 players when history shapes the optimum", () => {
-    // p8 is much stronger, so skill alone leaves a positive floor and history decides who partners p8
-    const ps = roster([1, 1, 1, 1, 1, 1, 1, 5])
+    // p8 stands apart, so skill alone leaves a positive floor and history decides who partners p8
+    const ps = roster([1, 1, 1, 1, 1, 1, 1, 3])
     const history = [
       played("a", ["p8", "p1"], ["p2", "p3"], "2026-11-14"),
       played("b", ["p8", "p2"], ["p4", "p5"], "2026-11-01"),

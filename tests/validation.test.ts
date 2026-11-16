@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest"
 import {
+  MAX_SKILL,
+  MIN_SKILL,
   parseMatchPatch,
   parsePlayerCreate,
   parsePlayerPatch,
@@ -10,8 +12,10 @@ import {
 const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`
 
 describe("parsePlayerCreate", () => {
-  it("accepts every skill from 1 to 5", () => {
-    for (const skill_level of [1, 2, 3, 4, 5]) expect(parsePlayerCreate({ name: "Ana", skill_level }).ok).toBe(true)
+  it("accepts every skill from 1 to 3 and nothing outside it", () => {
+    expect([MIN_SKILL, MAX_SKILL]).toEqual([1, 3])
+    for (const skill_level of [1, 2, 3]) expect(parsePlayerCreate({ name: "Ana", skill_level }).ok).toBe(true)
+    for (const skill_level of [0, 4]) expect(parsePlayerCreate({ name: "Ana", skill_level }).ok).toBe(false)
   })
   it("trims the name and accepts an integer skill", () => {
     expect(parsePlayerCreate({ name: "  Ana ", skill_level: 3 })).toEqual({
@@ -24,7 +28,8 @@ describe("parsePlayerCreate", () => {
     [{ name: "   ", skill_level: 3 }],
     [{ name: "x".repeat(81), skill_level: 3 }],
     [{ name: "Ana", skill_level: 0 }],
-    [{ name: "Ana", skill_level: 6 }],
+    [{ name: "Ana", skill_level: 4 }],
+    [{ name: "Ana", skill_level: 5 }],
     [{ name: "Ana", skill_level: 10 }],
     [{ name: "Ana", skill_level: 11 }],
     [{ name: "Ana", skill_level: 2.5 }],
@@ -44,17 +49,17 @@ describe("parsePlayerCreate", () => {
 describe("parsePlayerPatch", () => {
   it("accepts partial updates", () => {
     expect(parsePlayerPatch({ active: false })).toEqual({ ok: true, value: { active: false } })
-    expect(parsePlayerPatch({ name: " Bo ", skill_level: 4 })).toEqual({
+    expect(parsePlayerPatch({ name: " Bo ", skill_level: 2 })).toEqual({
       ok: true,
-      value: { name: "Bo", skill_level: 4 },
+      value: { name: "Bo", skill_level: 2 },
     })
   })
   it("rejects an empty patch and bad types", () => {
     expect(parsePlayerPatch({}).ok).toBe(false)
     expect(parsePlayerPatch({ active: "no" }).ok).toBe(false)
     expect(parsePlayerPatch({ skill_level: 99 }).ok).toBe(false)
-    expect(parsePlayerPatch({ skill_level: 6 }).ok).toBe(false)
-    expect(parsePlayerPatch({ skill_level: 5 }).ok).toBe(true)
+    expect(parsePlayerPatch({ skill_level: 4 }).ok).toBe(false)
+    expect(parsePlayerPatch({ skill_level: 3 }).ok).toBe(true)
   })
 })
 

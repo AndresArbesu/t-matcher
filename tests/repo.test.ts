@@ -13,7 +13,7 @@ beforeEach(() => {
 
 async function roster(n = 8) {
   const players = []
-  for (let i = 1; i <= n; i++) players.push(await createPlayer(store, { name: `Player ${i}`, skill_level: (i % 5) + 1 }))
+  for (let i = 1; i <= n; i++) players.push(await createPlayer(store, { name: `Player ${i}`, skill_level: (i % 3) + 1 }))
   return players
 }
 const draftOf = (ids: string[], locked = [false, false]) => ({
@@ -55,7 +55,7 @@ describe("players", () => {
     const ana = await createPlayer(store, { name: "Ana", skill_level: 3 })
     await createPlayer(store, { name: "Bo", skill_level: 3 })
     await rejects(updatePlayer(store, ana.id, { name: "bo" }), 409, "conflict")
-    expect(await updatePlayer(store, ana.id, { name: "ANA", skill_level: 5 })).toMatchObject({ name: "ANA", skill_level: 5 })
+    expect(await updatePlayer(store, ana.id, { name: "ANA", skill_level: 1 })).toMatchObject({ name: "ANA", skill_level: 1 })
     expect(await updatePlayer(store, ana.id, { active: false })).toMatchObject({ active: false, name: "ANA" })
   })
 
