@@ -1,84 +1,91 @@
 # t-matcher
 
-A Next.js tennis/padel doubles scheduler imported from the v0 `match-history-persistence.zip` export. This replaces the old Java prototype on `main` while preserving its commits in Git history.
+A doubles scheduler for a recurring padel group. Each session it splits the players into courts of four, two against two, so that matches are **balanced** and **don't repeat** partners, opponents or whole matches, using the history of everything played before.
 
-It is built for one organizer who uses it now and then from one or two devices: no database to pause, no email to send, almost nothing to maintain.
+Live: https://t-matcher.vercel.app (single shared passcode, no accounts)
 
-## What it does
+Stack: Next.js 16 (App Router), TypeScript, Vitest, private Vercel Blob as storage.
 
-- One shared **passcode** protects the app. There are no accounts and no email.
-- A persistent **roster** of players (stable IDs, skill 1–5, soft "inactive" instead of deletion).
-- A **dated session** per day: choose participants, generate arrangements (multiples of four players), lock matches, regenerate the unlocked ones, **save**, and reload later with participants, match order and lock states intact.
-- **Record** saved matches as played; played matches become the history that scores later suggestions (weights below). Un-recording removes a match from history but keeps it on its session.
-- **Download backup** (next to "Sign out") saves the whole data file to the device.
+## The problem
 
-## How arrangements are generated and scored
+A weekly group has to be re-split into foursomes every session. Doing it by hand fails in two ways:
 
-**Generation** (`lib/match-analyzer.ts`): for a roster that is a multiple of four, the analyzer draws up to `DEFAULT_SAMPLING.maxSamples` (400) random *complete* schedules (shuffle, cut into foursomes, random team split each), scores every schedule as a whole (sum of its match scores), deduplicates them by canonical form (players sorted inside teams, teams and matches sorted), ranks best-first, and returns up to 3 that differ from each other in at least 2 matches (when fewer qualify it falls back to the next best unique ones). Four players are enumerated outright: there are exactly 3 team splits. Match evaluations are bounded by `maxSamples × matches per schedule`. "Regenerate" refills only unlocked slots from the same ranked remainders and skips the schedule currently shown; locked matches are returned untouched. This is a sample, not a proof of optimality; for 8 players the 315 possible schedules are covered almost completely, for 20 players only a tiny fraction is.
+1. **Unbalanced matches.** If the two strongest players land on the same side, the result is known in advance.
+2. **Repetition.** The same partners, the same opponents, sometimes the exact match of the previous session. Avoiding that requires remembering the whole history, which nobody does.
 
-**Scoring** (lower is better), all weights in `DEFAULT_RULES`:
+This is a small combinatorial optimisation problem with memory: choose a partition of N players into N/4 matches, each with a team split, minimising a cost that depends on the skill gap and on how often each pairing has already occurred.
 
-| Rule | Default | Meaning |
+## How it works
+
+1. Keep a **roster** with a skill level per player (1 to 3, lower is better).
+2. Pick a **session date** and who plays (a multiple of four).
+3. The app generates ranked **complete schedules**. Matches can be **locked**; regenerating reshuffles only the unlocked ones.
+4. **Save** the session. Mark matches as **played**: played matches become the history that scores later sessions.
+
+## Generation
+
+The search space is large. For 12 players there are 12! / (4!³ · 3!) = 5,775 ways to form the foursomes and 3 team splits per foursome, i.e. **155,925 distinct schedules**; at 20 players exhaustive search is out of the question. So the generator **samples** instead:
+
+1. Draw up to 2,000 random complete schedules (shuffle, cut into foursomes, pick a random team split for each).
+2. Score each schedule **as a whole** (the sum of its match scores). Ranking whole schedules, not independent matches, stops one good court from being paid for with a terrible one elsewhere.
+3. Deduplicate by canonical form (players sorted inside teams, teams and matches sorted), so the same schedule drawn twice counts once.
+4. Return the best 3 that differ from each other in at least 2 matches, so the alternatives are real alternatives and not cosmetic permutations.
+5. **Regenerate with locks:** locked matches are returned untouched, and the remaining players are re-drawn into the free slots from the same ranked candidates, skipping the schedule currently on screen.
+
+This is a sample, not a proof of optimality. At 8 players (315 schedules) coverage is nearly complete; at 12 players 2,000 draws reach a perfectly balanced schedule reliably (see the simulation below); beyond that, coverage drops and quality degrades gracefully. The history is indexed once per analyzer (maps keyed by player pair and by pair of teams), so scoring a candidate is a handful of lookups. Generating for 12 players against a 150-match history takes roughly 10 to 15 ms on a laptop.
+
+## Scoring
+
+Lower is better. For a match of team A against team B:
+
+```
+score = 1000 · |Σlevel(A) − Σlevel(B)|
+      + 200 · min(rematches, 2)                    same two teams met before
+      +  25 · min(meetings, 2)      per opposing pair (4 per match)
+      +  20 · min(partnerships, 2)  per team (2 per match)
+```
+
+Each repeat term is multiplied by how recently **that item** last occurred, measured in **sessions, not days** (a group that plays on irregular dates cares about the previous session, not the calendar):
+
+| Last occurred | Multiplier | Flat extra, once per match |
 | --- | --- | --- |
-| `skillDifferenceWeight` | 10 | per point of difference between the teams' summed skill |
-| `rivalPairPenalty` | 1000 | per earlier match with exactly the same two teams |
-| `individualRivalPenalty` | 500 | per opposing player pair that was also on opposite sides in an earlier match |
-| `ownPairPenalty` | 300 | per earlier match in which either current team was already a team |
-| `recentWindowDays` | 7 | a repeat within this many days is "recent" |
-| `recentMultiplier` | 3 | multiplies the three repeat penalties when recent |
-| `recentPlayPenalty` | 2000 | flat extra when recent |
+| previous session | ×3 | +100 |
+| 2 sessions ago | ×2 | +50 |
+| 3 or more | ×1 | none |
 
-Individual rivals are counted per opposing *pair*, so facing someone you met before counts even if the other players differ. Players who were partners before are not counted as rivals, and an exact rematch is counted once, as a rival pair, not again as four individual rivals. An exact rematch still also triggers the own-pair penalty for both teams (unchanged from before).
+History never expires; older repeats keep counting at ×1. Counts are capped at 2, so repeat penalties stay bounded however long the history grows. Without the cap, accumulated repeats eventually drown out the balance term, which was a real flaw in the first version of this scoring.
 
-## Setup (local)
+### Priorities as invariants
+
+The weights are not arbitrary. They encode an ordering, and the test suite asserts it by computing the bounds from `DEFAULT_RULES`, so changing a weight tells you whether the ordering still holds.
+
+1. **Balance beats repetition.** The worst possible non-rematch (all four opposing pairs and both partnerships at their caps, all in the previous session) costs 3 · (4·25·2 + 2·20·2) + 100 = **940 < 1000**. A perfectly balanced match always beats one with a gap of 1.
+2. **Replaying the previous session's match is avoided unless it costs balance.** One such rematch costs 3 · 340 + 100 = **1120**, between one and two levels of gap. The app accepts a gap of 1 to avoid it, never a gap of 2 or more.
+3. **An exact rematch is charged for everything it contains** (the rematch, four opposing pairs, two partnerships), so it always costs more than the sum of its parts. An earlier version under-priced rematches and the search found them as cheap loopholes.
+4. Among equally balanced schedules, fewer and older repeats win. The last two sessions weigh most, so matches don't come back every session or every other session.
+
+### Does it work?
+
+`tests/scoring-simulation.test.ts` replays 13 sessions with 12 players (levels 1/1/1/1/2/2/2/2/3/3/3/3), taking the best schedule each time and feeding it back as history, on weekly dates and on irregular ones (gaps of 2 to 20 days). Over 30 seeds: every match was perfectly balanced, no exact match returned within 2 sessions, no foursome played together in consecutive sessions, and at most one exact rematch of any age occurred per 39-match season. Weekly and irregular dates give identical schedules for the same seed, because only the order of the dates matters.
+
+## Storage and access
+
+- **State is one private JSON document** in Vercel Blob (`t-matcher/data.json`): no database to pause, no queries, nothing to migrate for a few kilobytes of data.
+- **Concurrency is optimistic.** Every write is conditional on the ETag that was read (`ifMatch`). On a collision the loser re-reads and retries, up to 6 times with a short backoff, then it surfaces as `409`. Testing against the real service exposed two behaviours that fakes hide: reads return a *weak* ETag that conditional writes reject, and simultaneous writers get a generic "conflicting operation" error instead of a precondition failure. Both are handled and covered by tests; 24 concurrent writes against the real store all landed.
+- **Durability:** one snapshot per day (last 30 kept) and a *Download backup* button.
+- **Access:** one shared passcode. The session cookie is an HMAC-signed expiry, `httpOnly`, renewed on every authenticated request, so regular use never logs anyone out.
+- Business rules (unique names, no deleting players, played matches survive a draft save) live in `lib/repo.ts`, not in the storage layer.
+
+## Run it locally
 
 ```sh
 npm install
-echo 'APP_PASSCODE=pick-something' > .env.local   # optional
-npm run dev
-```
-
-Open http://localhost:3000. If `APP_PASSCODE` is not set, **the passcode is `dev`** (local development only; on Vercel a missing `APP_PASSCODE` makes the app refuse every request). Locally the data is a plain JSON file, `.data/store.json` (git-ignored); delete it to start over.
-
-Copy `.env.example` for the list of variables. Neither is a `NEXT_PUBLIC_` variable: both stay on the server.
-
-## Architecture
-
-- **One private JSON document** holds everything (`lib/store.ts`): `{ version: 1, players, sessions: { "YYYY-MM-DD": { participants, matches, updated_at } }, meta }`. The `version` field lets later changes migrate it.
-- **Production storage is a private [Vercel Blob](https://vercel.com/docs/vercel-blob/private-storage)** at `t-matcher/data.json` (`lib/blob-store.ts`). Reads bypass the CDN cache (`useCache: false`), so you always see the latest save. Writes are conditional on the version that was read (`ifMatch` ETag); if two requests collide the loser re-reads and retries (up to 4 times, then `409 conflict`). Private Blob needs `@vercel/blob` 2.3 or newer.
-- **Local storage is a file** (`lib/file-store.ts`, `.data/store.json`) with the same ETag rule. It is used only when `BLOB_READ_WRITE_TOKEN` is absent **and** the app is not on Vercel. On Vercel without the token the app fails loudly (500) rather than writing to an ephemeral disk.
-- **Daily snapshot:** the first write of each UTC day also saves a copy to `t-matcher/snapshots/YYYY-MM-DD.json`; the newest 30 are kept. A snapshot problem never fails the user's request.
-- **Business rules live in `lib/repo.ts`** (the old SQL schema is gone): player names unique ignoring case, skill 1–5, players are never deleted (only deactivated), played matches are history and survive a draft save, a participant of a played match cannot be removed (`409 in_use`), every new match has four distinct participants.
-- **Passcode login** (`lib/auth.ts`): `POST /api/login` compares in constant time and, after a wrong passcode, waits one second and answers 401. A correct one sets the `tm_session` cookie: an expiry time plus an HMAC-SHA256 signature keyed with the passcode; `httpOnly`, `SameSite=Lax`, `Secure` in production. The browser keeps it 400 days (the most browsers allow) and the signature is valid for 10 years from its last renewal; every authenticated call, including opening the app, issues a fresh cookie, so regular use never logs anyone out. Changing `APP_PASSCODE` signs every device out. Every `/api` route checks the cookie before touching data; state-changing routes also refuse a foreign `Origin`.
-- **Export:** `GET /api/export` (signed in) downloads the whole document as `t-matcher-backup-YYYY-MM-DD.json`.
-- All API responses are `Cache-Control: no-store`, and errors are fixed codes only (storage error text is never returned or logged beyond a class name).
-
-### The passcode must be strong
-
-A serverless function cannot rate-limit across requests, so the one-second delay only slows each guess. Anyone who can reach the site can try guesses in parallel. Use a long random passcode (for example `openssl rand -base64 18`), not a word or a date, and keep it in a password manager.
-
-## Tests and checks
-
-```sh
-npm test            # vitest: stores, business rules, auth, routes, UI, smoke script
+npm run dev        # http://localhost:3000, passcode "dev", data in .data/store.json
+npm test           # 366 tests
 npx tsc --noEmit
-npm run build
 ```
 
-With the app running (`npm run dev`), an end-to-end check over real HTTP against the local file store:
+## More
 
-```sh
-node scripts/smoke.mjs                    # passcode from APP_PASSCODE, else "dev"
-BASE_URL=http://127.0.0.1:3000 APP_PASSCODE=... node scripts/smoke.mjs
-```
-
-It creates players named "Smoke …" in `.data/store.json`, saves and records a match, checks the history and the export, and prints `PASS`. It refuses a non-local `BASE_URL` unless `ALLOW_REMOTE=1`.
-
-What the tests do and do not prove: the unit tests run against fakes of the four `@vercel/blob` functions (the fake mimics the real service's weak-ETag reads). `scripts/smoke.mjs` run against a local server wired to a real Blob store was used to confirm the real behaviour, including simultaneous writers (see `docs/OPERATIONS.md`). The production store itself is only proven by the first sign-in after a deploy.
-
-## Known gaps
-
-- Schedules are for multiples of four players only; one saved schedule per date (candidates other than the saved one are not kept).
-- Scoring rules are typed constants, not yet user-editable. Regeneration may alternate between two good schedules when the candidate pool is small.
-- One shared passcode: everyone who knows it sees and edits the same data. There is no per-user history.
-- Two people saving at the same instant is handled by retry, but the last save wins for the same field.
+- [`docs/TECHNICAL.md`](docs/TECHNICAL.md): architecture, API rules, auth details, tests and known gaps.
+- [`docs/OPERATIONS.md`](docs/OPERATIONS.md): where things live, shipping process, backups and restore.

@@ -7,7 +7,7 @@ import type { MatchHistory, Player, SavedMatch } from "@/lib/types"
 const players: Player[] = Array.from({ length: 8 }, (_, i) => ({
   id: `p${i + 1}`,
   name: `Player ${i + 1}`,
-  skill_level: (i % 5) + 1,
+  skill_level: (i % 3) + 1,
   active: true,
 }))
 const byId = new Map(players.map((p) => [p.id, p]))

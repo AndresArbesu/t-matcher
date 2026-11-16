@@ -34,7 +34,7 @@ Note: preview deployments use the same Blob store and passcode as production unl
 - **Why it does not pause:** a Blob store is plain object storage with no activity requirement, unlike a free Supabase database that pauses after a week. Nothing needs to "keep it awake".
 - **Store credential:** `BLOB_READ_WRITE_TOKEN` is created and set by Vercel when the Blob store is connected to the project. Never create or paste it by hand into the repo.
 - **If the credential is missing on Vercel** the app answers every data call with a generic error (500) instead of using a temporary file. That means the store is not connected to this environment; connect it under the project's Storage tab.
-- **Scoring and skill rules live in code**, not in the data: skill 1–5 (`lib/validation.ts`), scoring weights (`lib/match-analyzer.ts`), player and session rules (`lib/repo.ts`). Changing them is a pull request, and old data keeps working.
+- **Scoring and skill rules live in code**, not in the data: skill 1–3 with 1 the strongest (`lib/validation.ts`), scoring weights and repeat caps (`lib/match-analyzer.ts`; balance first, then not replaying the last session's match, then fresh partners and rivals; repeats are weighed by how many sessions ago they were, counted over the played dates before the session being planned, never in days), player and session rules (`lib/repo.ts`). Changing them is a pull request, and old data keeps working. Players saved earlier with a level above 3 stay in the document as they are; edit them to a level from 1 to 3, because the scoring still uses whatever number is stored.
 
 ## The passcode
 

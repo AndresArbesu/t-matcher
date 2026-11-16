@@ -1,10 +1,10 @@
 import { describe, expect, it, vi } from "vitest"
 import { regenerateUnlocked, withLocks, type DraftMatch } from "@/lib/draft"
-import { MatchAnalyzer, canonicalMatchKey, canonicalScheduleKey } from "@/lib/match-analyzer"
+import { DEFAULT_SAMPLING, MatchAnalyzer, canonicalMatchKey, canonicalScheduleKey } from "@/lib/match-analyzer"
 import type { MatchHistory, Player } from "@/lib/types"
 
 const NOW = Date.parse("2026-11-15T12:00:00Z")
-const roster = (n: number, skill = (i: number) => (i % 5) + 1): Player[] =>
+const roster = (n: number, skill = (i: number) => (i % 3) + 1): Player[] =>
   Array.from({ length: n }, (_, i) => ({ id: `p${String(i + 1).padStart(2, "0")}`, name: `P${i + 1}`, skill_level: skill(i), active: true }))
 
 function mulberry32(seed: number) {
@@ -115,7 +115,7 @@ describe("regenerateUnlocked with sampled remainders", () => {
     const { analyzer, draft } = startingDraft(ps, 3)
     const spy = vi.spyOn(analyzer, "scoreMatch")
     regenerateUnlocked(analyzer, ps, draft)
-    expect(spy.mock.calls.length).toBeLessThanOrEqual(400 * 5)
+    expect(spy.mock.calls.length).toBeLessThanOrEqual(DEFAULT_SAMPLING.maxSamples * 5)
   })
 
   it("still rejects a participant list that no longer fits the draft", () => {

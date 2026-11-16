@@ -6,8 +6,9 @@ export const MAX_PARTICIPANTS = 64
 export const MAX_NOTES_LENGTH = 1000
 
 const name = z.string().trim().min(1).max(80)
+/** Skill levels run from 1 (strongest) to 3 (lowest). */
 export const MIN_SKILL = 1
-export const MAX_SKILL = 5
+export const MAX_SKILL = 3
 const skill = z.number().int().min(MIN_SKILL).max(MAX_SKILL)
 const uuid = z.string().uuid()
 

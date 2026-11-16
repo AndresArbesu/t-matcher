@@ -8,7 +8,7 @@ import Home from "@/app/page"
 const players: Player[] = Array.from({ length: 8 }, (_, i) => ({
   id: `p${i + 1}`,
   name: `Player ${i + 1}`,
-  skill_level: (i % 5) + 1,
+  skill_level: (i % 3) + 1,
   active: true,
 }))
 
@@ -304,6 +304,7 @@ describe("browser-found corrections", () => {
     team1_player1_id: "p1", team1_player2_id: "p2", team2_player1_id: "p3", team2_player2_id: "p4",
     played_at: "2026-11-15", created_at: "",
   }
+  const historyRowAt = (played_at: string): MatchHistory => ({ ...historyRow, played_at })
   const openSpanish = async () => {
     await openEnglish()
     fireEvent.click(await screen.findByText("🇪🇸 Español"))
@@ -314,31 +315,111 @@ describe("browser-found corrections", () => {
     return title.closest("[data-slot=card]")!.textContent!
   }
 
+  // 3 x (200 + 4 x 25 + 2 x 20) + 100: a rematch of the last session seen once, with nothing else going on
+  const RECENT_REMATCH = "1120"
+
   it("explains scoring with the real DEFAULT_RULES values in English", async () => {
     const text = await helpText(openEnglish, /How the Algorithm Works/)
-    for (const n of ["1000", "500", "300", "2000", "10", "×3", "400"]) expect(text).toContain(n)
-    expect(text).not.toMatch(/\+200\b|\+100\b|\+50\b|Score 2\b/)
+    for (const n of ["1000", "200", "25", "20", "100", "+50", "×3", "×2", "2000", RECENT_REMATCH]) expect(text).toContain(n)
+    expect(text).toMatch(/balance comes first/i)
+    expect(text).toMatch(/last session/i)
+    expect(text).toMatch(/2 sessions ago/)
+    expect(text).toMatch(/more than 1 level/)
+    expect(text).toMatch(/never 2 or more/)
+    expect(text).toMatch(/at most 2 times/)
+    expect(text).toMatch(/up to 2 times/)
+    expect(text).toMatch(/never expires/)
+    // sessions, not days; and none of the retired numbers or sentences survive
+    expect(text).not.toMatch(/\bdays?\b|last week|week's/i)
+    expect(text).not.toMatch(/\+500\b|\+1000\b|\+2000\b|\b400 random|\+600|\+300|1-5|1–5/)
   })
 
   it("explains scoring with the real DEFAULT_RULES values in Spanish", async () => {
     const text = await helpText(openSpanish, /Cómo Funciona el Algoritmo/)
-    for (const n of ["1000", "500", "300", "2000", "10", "×3", "400"]) expect(text).toContain(n)
-    expect(text).not.toMatch(/\+200\b|\+100\b|\+50\b|Puntuación 2\b/)
+    for (const n of ["1000", "200", "25", "20", "100", "+50", "×3", "×2", "2000", RECENT_REMATCH]) expect(text).toContain(n)
+    expect(text).toMatch(/primero, el equilibrio/i)
+    expect(text).toMatch(/última sesión/i)
+    expect(text).toMatch(/hace 2 sesiones/)
+    expect(text).toMatch(/más que 1 nivel/)
+    expect(text).toMatch(/nunca 2 o más/)
+    expect(text).toMatch(/como máximo 2 veces/)
+    expect(text).toMatch(/hasta 2 veces/)
+    expect(text).toMatch(/nunca caduca/)
+    expect(text).not.toMatch(/\bdías?\b|semana pasada|de la semana/i)
+    expect(text).not.toMatch(/\+500\b|\+1000\b|\+2000\b|\b400 programaciones|\+600|\+300|1-5|1–5/)
   })
 
-  it("offers skill levels 1 to 5 only, and adds the chosen level", async () => {
+  it("offers skill levels 1 to 3 only (1 is the strongest), and adds the chosen level", async () => {
     await openEnglish()
-    const group = await screen.findByRole("radiogroup", { name: "Skill Level (1-5)" })
+    const group = await screen.findByRole("radiogroup", { name: "Skill Level (1-3)" })
     const radios = within(group).getAllByRole("radio")
-    expect(radios.map((r) => r.textContent)).toEqual(["1", "2", "3", "4", "5"])
-    expect(radios.find((r) => r.getAttribute("aria-checked") === "true")?.textContent).toBe("3")
-    expect(screen.queryByText(/1-10/)).toBeNull()
+    expect(radios.map((r) => r.textContent)).toEqual(["1", "2", "3"])
+    expect(radios.find((r) => r.getAttribute("aria-checked") === "true")?.textContent).toBe("2")
+    expect(screen.getByText("1 is the strongest, 3 the lowest.")).toBeTruthy()
+    expect(screen.queryByText(/1-5|1–5|1-10/)).toBeNull()
     for (const r of radios) expect(r.className).toContain("min-h-11")
-    fireEvent.click(radios[4])
+    fireEvent.click(radios[2])
     fireEvent.change(screen.getByLabelText("Player Name"), { target: { value: "Newbie" } })
     fireEvent.click(screen.getByText("Add Player"))
     await screen.findByText("All Players (9)")
-    expect(backend.calls.find((c) => c.method === "POST")!.body).toEqual({ name: "Newbie", skill_level: 5 })
+    expect(backend.calls.find((c) => c.method === "POST")!.body).toEqual({ name: "Newbie", skill_level: 3 })
+    // the form resets to the default level
+    expect(within(screen.getByRole("radiogroup", { name: "Skill Level (1-3)" })).getAllByRole("radio").find((r) => r.getAttribute("aria-checked") === "true")?.textContent).toBe("2")
+  })
+
+  it("labels and explains the skill levels in Spanish", async () => {
+    await openEnglish()
+    fireEvent.click(await screen.findByText("🇪🇸 Español"))
+    const group = await screen.findByRole("radiogroup", { name: "Nivel de Habilidad (1-3)" })
+    expect(within(group).getAllByRole("radio")).toHaveLength(3)
+    expect(screen.getByText("1 es el mejor nivel, 3 el más bajo.")).toBeTruthy()
+    expect(screen.queryByText(/1-5|1–5/)).toBeNull()
+  })
+
+  const fourOf = (played_at: string): MatchHistory => ({ ...historyRowAt(played_at), team1_player1_id: "p1", team1_player2_id: "p2", team2_player1_id: "p3", team2_player2_id: "p4" })
+  const otherGame = (played_at: string): MatchHistory => ({
+    ...historyRowAt(played_at),
+    id: `o-${played_at}`,
+    player1_id: "p5", player2_id: "p6", player3_id: "p7", player4_id: "p8",
+    team1_player1_id: "p5", team1_player2_id: "p6", team2_player1_id: "p7", team2_player2_id: "p8",
+  })
+  const generateFor = async (sessionDate: string) => {
+    await openEnglish()
+    await screen.findByText("All Players (8)")
+    fireEvent.change(screen.getByLabelText("Session date"), { target: { value: sessionDate } })
+    for (let i = 0; i < 4; i++) fireEvent.click(screen.getAllByRole("checkbox")[i])
+    fireEvent.click(screen.getByText("Generate Suggestions"))
+  }
+
+  it("measures repeats against the session date on screen: the latest earlier session is the last session", async () => {
+    backend.history = [fourOf("2026-03-08")]
+    await generateFor("2026-03-15")
+    expect((await screen.findAllByText(/Last repeat: last session/)).length).toBeGreaterThan(0)
+  })
+
+  it("counts sessions, not days: a session 40 days earlier is still the last session", async () => {
+    backend.history = [fourOf("2026-02-03")]
+    await generateFor("2026-03-15")
+    expect((await screen.findAllByText(/Last repeat: last session/)).length).toBeGreaterThan(0)
+  })
+
+  it("says how many sessions ago a repeat was", async () => {
+    backend.history = [fourOf("2026-03-01"), otherGame("2026-03-08")]
+    await generateFor("2026-03-15")
+    expect((await screen.findAllByText(/Last repeat: 2 sessions ago/)).length).toBeGreaterThan(0)
+  })
+
+  it("hydrates a saved draft with repeats measured against its own date", async () => {
+    backend.history = [fourOf("2026-03-08")]
+    backend.session = {
+      date: "2026-03-15",
+      participants: ["p1", "p2", "p3", "p4"],
+      matches: [{ id: "m1", position: 0, team1: ["p1", "p2"], team2: ["p3", "p4"], locked: false, played: false, notes: null }],
+    }
+    await openEnglish()
+    await screen.findByText("All Players (8)")
+    fireEvent.change(screen.getByLabelText("Session date"), { target: { value: "2026-03-15" } })
+    expect((await screen.findAllByText(/Last repeat: last session/)).length).toBeGreaterThan(0)
   })
 
   it("adds a player with Enter and resets the form", async () => {

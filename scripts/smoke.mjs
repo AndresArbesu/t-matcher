@@ -78,13 +78,13 @@ r = await call("GET", "/api/session")
 expect(r.status === 200 && r.json?.ok === true, `GET /api/session with the cookie should be ok, got ${r.status}`)
 
 // 3. Players: validation, creation, duplicates.
-r = await call("POST", "/api/players", { body: { name: `Smoke bad ${stamp}`, skill_level: 6 } })
-expect(r.status === 400, `skill level 6 should be rejected with 400, got ${r.status}`)
+r = await call("POST", "/api/players", { body: { name: `Smoke bad ${stamp}`, skill_level: 4 } })
+expect(r.status === 400, `skill level 4 should be rejected with 400, got ${r.status}`)
 
 r = await call("POST", "/api/players", { body: { name: nameA, skill_level: 3 } })
 expect(r.status === 201, `creating player A should be 201, got ${r.status}`)
 const players = [r.json]
-for (const [name, level] of [[nameB, 4], [`Smoke C ${stamp}`, 2], [`Smoke D ${stamp}`, 5]]) {
+for (const [name, level] of [[nameB, 2], [`Smoke C ${stamp}`, 1], [`Smoke D ${stamp}`, 3]]) {
   r = await call("POST", "/api/players", { body: { name, skill_level: level } })
   expect(r.status === 201, `creating ${name} should be 201, got ${r.status}`)
   players.push(r.json)
