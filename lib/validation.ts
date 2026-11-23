@@ -69,3 +69,13 @@ export function parseSessionDraft(body: unknown): Parsed<SessionDraftInput> {
   }
   return parsed
 }
+
+const historicalMatch = z.object({ date: z.string(), team1: team, team2: team })
+export type HistoricalMatchInput = z.infer<typeof historicalMatch>
+export function parseHistoricalMatch(body: unknown): Parsed<HistoricalMatchInput> {
+  const result = parse(historicalMatch, body)
+  if (!result.ok) return result
+  const { date, team1, team2 } = result.value
+  if (!parseSessionDate(date) || date > new Date(Date.now() + 14 * 60 * 60 * 1000).toISOString().slice(0, 10) || new Set([...team1, ...team2]).size !== 4) return { ok: false }
+  return result
+}

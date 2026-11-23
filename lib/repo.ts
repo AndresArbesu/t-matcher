@@ -2,7 +2,7 @@ import { ApiError } from "./api/errors"
 import { toMatchHistory } from "./history"
 import { mutate, type Doc, type DocStore, type StoredMatch } from "./store"
 import type { MatchHistory, Player, SavedMatch, SavedSession } from "./types"
-import type { MatchPatch, PlayerCreate, PlayerPatch, SessionDraftInput } from "./validation"
+import type { HistoricalMatchInput, MatchPatch, PlayerCreate, PlayerPatch, SessionDraftInput } from "./validation"
 
 /**
  * All data access, over the single JSON document. The rules the old SQL schema
@@ -158,4 +158,24 @@ export async function listHistory(store: DocStore): Promise<MatchHistory[]> {
   // Newest session first; within a day the later match first.
   rows.sort((a, b) => b.history.played_at.localeCompare(a.history.played_at) || b.position - a.position)
   return rows.map((r) => r.history)
+}
+
+export async function addHistoricalMatch(store: DocStore, input: HistoricalMatchInput): Promise<MatchHistory> {
+  return mutate(store, (doc) => {
+    const ids = [...input.team1, ...input.team2]
+    if (!ids.every((id) => doc.players.some((p) => p.id === id))) throw new ApiError(422, "invalid_players")
+    const now = new Date().toISOString()
+    const session = doc.sessions[input.date] ?? { participants: [], matches: [], updated_at: now }
+    const match: StoredMatch = {
+      id: crypto.randomUUID(), position: session.matches.reduce((max, m) => Math.max(max, m.position + 1), 0),
+      team1: input.team1, team2: input.team2, played: true, locked: false, notes: null, created_at: now,
+    }
+    session.participants = [...new Set([...session.participants, ...ids])]
+    session.matches.push(match)
+    session.updated_at = now
+    doc.sessions[input.date] = session
+    return toMatchHistory({ id: match.id, notes: match.notes, created_at: match.created_at,
+      team1_player1_id: match.team1[0], team1_player2_id: match.team1[1],
+      team2_player1_id: match.team2[0], team2_player2_id: match.team2[1] }, input.date)
+  })
 }

@@ -48,6 +48,17 @@ function installFetch() {
 
       if (key === "GET /api/players") return respond(200, backend.players)
       if (key === "GET /api/history") return respond(200, backend.history)
+      if (key === "POST /api/history") {
+        const match = { id: "manual", position: 0, played: true, locked: false, notes: null, team1: body.team1, team2: body.team2 }
+        backend.history.unshift({ id: match.id, player1_id: body.team1[0], player2_id: body.team1[1], player3_id: body.team2[0], player4_id: body.team2[1], team1_player1_id: body.team1[0], team1_player2_id: body.team1[1], team2_player1_id: body.team2[0], team2_player2_id: body.team2[1], played_at: body.date, created_at: "" })
+        const session = backend.session
+        if (session && session.date === body.date) {
+          session.matches.push(match)
+          session.participants = [...new Set([...session.participants, ...body.team1, ...body.team2])]
+        }
+        backend.fail["GET /api/history"] = { status: 500, error: "server_error" }
+        return respond(201, backend.history[0])
+      }
       if (key === "GET /api/sessions/:date") return respond(200, { session: backend.session })
       if (key.startsWith("DELETE /api/players/")) {
         const p = backend.players.find((x) => x.id === url.split("/").pop())!
@@ -531,4 +542,57 @@ describe("browser-found corrections", () => {
     fireEvent.change(screen.getByLabelText("Session date"), { target: { value: "2026-11-16" } })
     await waitFor(() => expect(screen.queryByRole("alert")).toBeNull())
   })
+})
+
+
+it("shows a successfully saved historical match even if a later history refresh fails", async () => {
+  await openEnglish()
+  await screen.findByText("All Players (8)")
+  fireEvent.mouseDown(screen.getByRole("tab", { name: "Match History" }))
+  fireEvent.change(screen.getByLabelText("Match date"), { target: { value: "2020-01-02" } })
+  for (let n = 1; n <= 4; n++) fireEvent.change(screen.getByLabelText(`Player ${n}`), { target: { value: `p${n}` } })
+  fireEvent.click(screen.getByRole("button", { name: "Add historical match" }))
+  expect(await screen.findByText("Historical match added.")).toBeTruthy()
+  expect(await screen.findByText(/Match on Jan 2, 2020/)).toBeTruthy()
+})
+
+
+it("keeps unsaved locked drafts and updates the current session after adding history on that date", async () => {
+  await openEnglish()
+  await screen.findByText("All Players (8)")
+  const date = (screen.getByLabelText("Session date") as HTMLInputElement).value
+  backend.session = { date, participants: [], matches: [] }
+  for (let i = 0; i < 4; i++) fireEvent.click(screen.getAllByRole("checkbox")[i])
+  fireEvent.click(screen.getByText("Generate Suggestions"))
+  fireEvent.click((await screen.findAllByLabelText("Lock match 1"))[0])
+  fireEvent.mouseDown(screen.getByRole("tab", { name: "Match History" }))
+  fireEvent.change(screen.getByLabelText("Match date"), { target: { value: date } })
+  for (let n = 1; n <= 4; n++) fireEvent.change(screen.getByLabelText(`Player ${n}`), { target: { value: `p${n + 4}` } })
+  fireEvent.click(screen.getByRole("button", { name: "Add historical match" }))
+  await screen.findByText("Historical match added.")
+  fireEvent.mouseDown(screen.getByRole("tab", { name: "Record Match" }))
+  expect(await screen.findByText("1 of 1 played")).toBeTruthy()
+  fireEvent.mouseDown(screen.getByRole("tab", { name: "Players & Suggestions" }))
+  expect(screen.getByText(/\(8 selected\)/)).toBeTruthy()
+  expect((screen.getAllByLabelText("Lock match 1")[0] as HTMLInputElement).checked).toBe(true)
+  fireEvent.click(screen.getAllByText("Save Schedule")[0])
+  await screen.findByText("Schedule saved")
+  expect(putBody().participants).toHaveLength(8)
+})
+
+it("rescores existing locked suggestions when an earlier historical match is added", async () => {
+  await openEnglish()
+  await screen.findByText("All Players (8)")
+  for (let i = 0; i < 4; i++) fireEvent.click(screen.getAllByRole("checkbox")[i])
+  fireEvent.click(screen.getByText("Generate Suggestions"))
+  fireEvent.click((await screen.findAllByLabelText("Lock match 1"))[0])
+  expect(screen.getAllByText(/Last repeat: never/i).length).toBeGreaterThan(0)
+  fireEvent.mouseDown(screen.getByRole("tab", { name: "Match History" }))
+  fireEvent.change(screen.getByLabelText("Match date"), { target: { value: "2020-01-02" } })
+  for (let n = 1; n <= 4; n++) fireEvent.change(screen.getByLabelText(`Player ${n}`), { target: { value: `p${n}` } })
+  fireEvent.click(screen.getByRole("button", { name: "Add historical match" }))
+  await screen.findByText("Historical match added.")
+  fireEvent.mouseDown(screen.getByRole("tab", { name: "Players & Suggestions" }))
+  expect(screen.getAllByText(/Last repeat: last session/).length).toBeGreaterThan(0)
+  expect((screen.getAllByLabelText("Lock match 1")[0] as HTMLInputElement).checked).toBe(true)
 })

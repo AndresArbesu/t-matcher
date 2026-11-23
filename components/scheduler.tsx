@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useEffect, useState, type FormEvent } from "react"
+import { useCallback, useEffect, useRef, useState, type FormEvent } from "react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
@@ -8,7 +8,7 @@ import { Label } from "@/components/ui/label"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Badge } from "@/components/ui/badge"
 import { MatchRecordingForm } from "@/components/match-recording-form"
-import { MatchHistoryDisplay } from "@/components/match-history-display"
+import { HistoricalMatchForm, MatchHistoryDisplay } from "@/components/match-history-display"
 import { api, ClientApiError } from "@/lib/client-api"
 import { hydrateDraft, regenerateUnlocked, toDraftPayload, withLocks, type DraftMatch } from "@/lib/draft"
 import { MatchAnalyzer } from "@/lib/match-analyzer"
@@ -44,6 +44,8 @@ export function Scheduler({ language, isDarkMode }: SchedulerProps) {
   const [newPlayerSkill, setNewPlayerSkill] = useState(DEFAULT_SKILL)
 
   const [sessionDate, setSessionDate] = useState(todayLocal)
+  const currentSessionDate = useRef(sessionDate)
+  currentSessionDate.current = sessionDate
   const [sessionState, setSessionState] = useState<"loading" | "ready" | "error">("loading")
   const [sessionReload, setSessionReload] = useState(0)
   const [selectedPlayers, setSelectedPlayers] = useState<Set<string>>(new Set())
@@ -701,7 +703,27 @@ export function Scheduler({ language, isDarkMode }: SchedulerProps) {
           />
         </TabsContent>
 
-        <TabsContent value="history">
+        <TabsContent value="history" className="space-y-6">
+          <HistoricalMatchForm players={players} t={t} onSave={async (input) => {
+            setNotice(null)
+            try {
+              const added = await api.addHistoricalMatch(input)
+              const history = [added, ...matchHistory]
+              setMatchHistory(history)
+              const analyzer = new MatchAnalyzer(history, players, { referenceDate: currentSessionDate.current })
+              setDrafts((current) => current.map((draft) => draft.map((match) => ({
+                ...analyzer.scoreMatch(match.team1, match.team2), locked: match.locked,
+              }))))
+              if (input.date === currentSessionDate.current) {
+                setSelectedPlayers((current) => new Set([...current, ...input.team1, ...input.team2]))
+                setSavedMatches((current) => [...current, {
+                  id: added.id, position: current.reduce((max, m) => Math.max(max, m.position + 1), 0),
+                  team1: input.team1, team2: input.team2, locked: false, played: true, notes: null,
+                }])
+              }
+              return true
+            } catch (error) { fail(error); return false }
+          }} />
           <MatchHistoryDisplay
             players={players}
             matchHistory={matchHistory}
