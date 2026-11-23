@@ -54,6 +54,9 @@ export function Scheduler({ language, isDarkMode }: SchedulerProps) {
 
   const [isLoading, setIsLoading] = useState(false)
   const [isSaving, setIsSaving] = useState(false)
+  const [historySaving, setHistorySaving] = useState(false)
+  const [historyVisited, setHistoryVisited] = useState(false)
+  const matchMutation = useRef(false)
   const [pendingMatchId, setPendingMatchId] = useState<string | null>(null)
   const [notice, setNotice] = useState<Notice | null>(null)
 
@@ -110,6 +113,13 @@ export function Scheduler({ language, isDarkMode }: SchedulerProps) {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [baseState, sessionDate, sessionReload])
+
+  const isCompleteDraft = (draft: DraftMatch[]) => {
+    const ids = draft.flatMap((m) => [...m.team1, ...m.team2].map((p) => p.id))
+    return ids.length === selectedPlayers.size && new Set(ids).size === ids.length && ids.every((id) => selectedPlayers.has(id))
+  }
+  const sortDrafts = (items: DraftMatch[][]) => [...items].sort((a, b) =>
+    a.reduce((sum, m) => sum + m.totalScore, 0) - b.reduce((sum, m) => sum + m.totalScore, 0))
 
   const activePlayers = players.filter((p) => p.active)
   const visibleForSelection = players.filter((p) => p.active || selectedPlayers.has(p.id))
@@ -206,7 +216,7 @@ export function Scheduler({ language, isDarkMode }: SchedulerProps) {
       const analyzer = new MatchAnalyzer(matchHistory, players, { referenceDate: sessionDate })
       const chosen = players.filter((p) => selectedPlayers.has(p.id))
       const next = regenerateUnlocked(analyzer, chosen, drafts[draftIndex])
-      setDrafts(drafts.map((draft, i) => (i === draftIndex ? next : draft)))
+      setDrafts(sortDrafts(drafts.map((draft, i) => (i === draftIndex ? next : draft))))
     } catch (error) {
       console.error("Error regenerating with fixed matches:", error)
       fail(error)
@@ -228,6 +238,8 @@ export function Scheduler({ language, isDarkMode }: SchedulerProps) {
   }
 
   const setMatchPlayed = async (matchId: string, played: boolean, notes: string) => {
+    if (matchMutation.current) return
+    matchMutation.current = true
     setPendingMatchId(matchId)
     setNotice(null)
     try {
@@ -238,6 +250,7 @@ export function Scheduler({ language, isDarkMode }: SchedulerProps) {
     } catch (error) {
       fail(error)
     } finally {
+      matchMutation.current = false
       setPendingMatchId(null)
     }
   }
@@ -293,7 +306,7 @@ export function Scheduler({ language, isDarkMode }: SchedulerProps) {
         </div>
       )}
 
-      <Tabs defaultValue="players" className="space-y-6">
+      <Tabs defaultValue="players" onValueChange={(value) => { if (value === "history") setHistoryVisited(true) }} className="space-y-6">
         <TabsList
           className={`grid h-auto w-full grid-cols-3 gap-1 ${
             isDarkMode ? "bg-slate-800 border-slate-600" : "bg-slate-100 border-slate-200"
@@ -302,7 +315,7 @@ export function Scheduler({ language, isDarkMode }: SchedulerProps) {
           <TabsTrigger value="players" className={tabTriggerClass}>
             {t.playersAndSuggestions}
           </TabsTrigger>
-          <TabsTrigger value="record" className={tabTriggerClass}>
+          <TabsTrigger value="record" disabled={historySaving} className={tabTriggerClass}>
             {t.recordMatch}
           </TabsTrigger>
           <TabsTrigger value="history" className={tabTriggerClass}>
@@ -406,6 +419,7 @@ export function Scheduler({ language, isDarkMode }: SchedulerProps) {
                   <Input
                     id="sessionDate"
                     type="date"
+                    disabled={historySaving}
                     value={sessionDate}
                     onChange={(e) => e.target.value && setSessionDate(e.target.value)}
                     className={`w-full min-h-11 sm:w-auto ${
@@ -423,7 +437,7 @@ export function Scheduler({ language, isDarkMode }: SchedulerProps) {
                 </Button>
                 <Button
                   variant="outline"
-                  disabled={isSaving || sessionState !== "ready"}
+                  disabled={isSaving || sessionState !== "ready" || (drafts.length > 0 && drafts.some((draft) => !isCompleteDraft(draft)))}
                   onClick={() => void saveSession([], "selectionSaved")}
                   className={`col-span-2 min-h-11 sm:col-auto ${outlineButton}`}
                 >
@@ -504,11 +518,12 @@ export function Scheduler({ language, isDarkMode }: SchedulerProps) {
               )}
             </CardHeader>
             <CardContent>
-              {canGenerate && (
+              {(canGenerate || drafts.length > 0) && (
                 <div className="space-y-4 sm:space-y-6">
                   {drafts.length > 0 && (
                     <p className={`text-sm ${isDarkMode ? "text-slate-400" : "text-slate-600"}`}>{t.lockHint}</p>
                   )}
+                  {drafts.some((draft) => !isCompleteDraft(draft)) && <p role="status">{t.incompleteSchedule}</p>}
                   {drafts.map((draft, draftIndex) => (
                     <div
                       key={draftIndex}
@@ -613,7 +628,7 @@ export function Scheduler({ language, isDarkMode }: SchedulerProps) {
                         )}
                         <Button
                           onClick={() => void saveSession(draft, "scheduleSaved")}
-                          disabled={isSaving || sessionState !== "ready"}
+                          disabled={isSaving || sessionState !== "ready" || !isCompleteDraft(draft)}
                           className="min-h-11 w-full bg-blue-600 text-white hover:bg-blue-700 disabled:bg-slate-600 sm:w-auto"
                         >
                           {isSaving ? t.saving : t.saveSchedule}
@@ -703,17 +718,20 @@ export function Scheduler({ language, isDarkMode }: SchedulerProps) {
           />
         </TabsContent>
 
-        <TabsContent value="history" className="space-y-6">
-          <HistoricalMatchForm players={players} t={t} onSave={async (input) => {
+        <TabsContent value="history" forceMount={historyVisited || undefined} className="space-y-6 data-[state=inactive]:hidden">
+          <HistoricalMatchForm players={players} t={t} disabled={sessionState !== "ready" || pendingMatchId !== null} onSave={async (input) => {
+            if (sessionState !== "ready" || matchMutation.current) return false
+            matchMutation.current = true
+            setHistorySaving(true)
             setNotice(null)
             try {
               const added = await api.addHistoricalMatch(input)
               const history = [added, ...matchHistory]
               setMatchHistory(history)
               const analyzer = new MatchAnalyzer(history, players, { referenceDate: currentSessionDate.current })
-              setDrafts((current) => current.map((draft) => draft.map((match) => ({
+              setDrafts((current) => sortDrafts(current.map((draft) => draft.map((match) => ({
                 ...analyzer.scoreMatch(match.team1, match.team2), locked: match.locked,
-              }))))
+              })))))
               if (input.date === currentSessionDate.current) {
                 setSelectedPlayers((current) => new Set([...current, ...input.team1, ...input.team2]))
                 setSavedMatches((current) => [...current, {
@@ -723,12 +741,14 @@ export function Scheduler({ language, isDarkMode }: SchedulerProps) {
               }
               return true
             } catch (error) { fail(error); return false }
+            finally { matchMutation.current = false; setHistorySaving(false) }
           }} />
           <MatchHistoryDisplay
             players={players}
             matchHistory={matchHistory}
             t={t}
             isDarkMode={isDarkMode}
+            disabled={historySaving || pendingMatchId !== null}
             onUnrecord={(id) => void setMatchPlayed(id, false, "")}
           />
         </TabsContent>
