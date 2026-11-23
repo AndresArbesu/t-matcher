@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, useRef } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -9,6 +9,7 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { daysSince, formatPlayedAt } from "@/lib/history"
 import type { translations } from "@/lib/translations"
+import type { HistoricalMatchInput } from "@/lib/validation"
 import type { Player, MatchHistory } from "@/lib/types"
 
 interface MatchHistoryWithPlayers extends MatchHistory {
@@ -22,11 +23,12 @@ interface MatchHistoryDisplayProps {
   matchHistory: MatchHistory[]
   t: (typeof translations)[keyof typeof translations]
   isDarkMode: boolean
+  disabled?: boolean
   /** Un-records a match: it leaves the history but stays on its saved session. */
   onUnrecord: (matchId: string) => void
 }
 
-export function MatchHistoryDisplay({ players, matchHistory, t, isDarkMode, onUnrecord }: MatchHistoryDisplayProps) {
+export function MatchHistoryDisplay({ players, matchHistory, t, isDarkMode, disabled = false, onUnrecord }: MatchHistoryDisplayProps) {
   const [filteredHistory, setFilteredHistory] = useState<MatchHistoryWithPlayers[]>([])
   const [searchTerm, setSearchTerm] = useState("")
   const [playerFilter, setPlayerFilter] = useState("")
@@ -116,8 +118,8 @@ export function MatchHistoryDisplay({ players, matchHistory, t, isDarkMode, onUn
         </CardTitle>
 
         {/* Filters */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <div>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 pt-4">
+          <div className="grid gap-2">
             <Label htmlFor="search">{t.search}</Label>
             <Input
               id="search"
@@ -128,7 +130,7 @@ export function MatchHistoryDisplay({ players, matchHistory, t, isDarkMode, onUn
             />
           </div>
 
-          <div>
+          <div className="grid gap-2">
             <Label htmlFor="playerFilter">{t.filterByPlayer}</Label>
             <Select value={playerFilter} onValueChange={setPlayerFilter}>
               <SelectTrigger className={fieldClass}>
@@ -145,7 +147,7 @@ export function MatchHistoryDisplay({ players, matchHistory, t, isDarkMode, onUn
             </Select>
           </div>
 
-          <div>
+          <div className="grid gap-2">
             <Label htmlFor="sortBy">{t.sortBy}</Label>
             <Select value={sortBy} onValueChange={setSortBy}>
               <SelectTrigger className={fieldClass}>
@@ -187,7 +189,7 @@ export function MatchHistoryDisplay({ players, matchHistory, t, isDarkMode, onUn
                       <span className={`text-sm ${muted}`}>
                         {daysAgo === 0 ? t.today : `${daysAgo} ${t.daysAgo}`}
                       </span>
-                      <Button variant="destructive" size="sm" onClick={() => deleteMatch(match.id)}>
+                      <Button variant="destructive" size="sm" disabled={disabled} onClick={() => deleteMatch(match.id)}>
                         {t.remove}
                       </Button>
                     </div>
@@ -244,6 +246,56 @@ export function MatchHistoryDisplay({ players, matchHistory, t, isDarkMode, onUn
             })}
           </div>
         )}
+      </CardContent>
+    </Card>
+  )
+}
+
+
+export function HistoricalMatchForm({ players, t, onSave, disabled = false }: {
+  players: Player[]
+  t: (typeof translations)["en"]
+  disabled?: boolean
+  onSave: (input: HistoricalMatchInput) => Promise<boolean>
+}) {
+  const [date, setDate] = useState("")
+  const [selected, setSelected] = useState(["", "", "", ""])
+  const [invalid, setInvalid] = useState(false)
+  const [saved, setSaved] = useState(false)
+  const [pending, setPending] = useState(false)
+  const inFlight = useRef(false)
+  const now = new Date()
+  const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`
+  const submit = async (event: React.FormEvent) => {
+    event.preventDefault()
+    if (inFlight.current || disabled) return
+    const validDate = /^\d{4}-\d{2}-\d{2}$/.test(date) && !Number.isNaN(Date.parse(`${date}T00:00:00Z`)) && new Date(`${date}T00:00:00Z`).toISOString().slice(0, 10) === date && date <= today
+    if (!validDate || selected.some((id) => !players.some((p) => p.id === id)) || new Set(selected).size !== 4) { setInvalid(true); return }
+    setInvalid(false); setSaved(false); setPending(true); inFlight.current = true
+    try {
+      if (await onSave({ date, team1: [selected[0], selected[1]], team2: [selected[2], selected[3]] })) {
+        setSelected(["", "", "", ""]); setSaved(true)
+      }
+    } finally { inFlight.current = false; setPending(false) }
+  }
+  return (
+    <Card>
+      <CardHeader><CardTitle>{t.historicalEntry}</CardTitle></CardHeader>
+      <CardContent>
+        <form onSubmit={submit} className="space-y-4" noValidate>
+          <div className="grid gap-2"><Label htmlFor="historical-date">{t.historicalDate}</Label><Input id="historical-date" type="date" max={today} value={date} onChange={(e) => setDate(e.target.value)} /></div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
+            {[0, 1].map((team) => <fieldset key={team} className="min-w-0 space-y-4"><legend className="font-medium mb-3">{team === 0 ? t.team1 : t.team2}</legend>
+              {[team * 2, team * 2 + 1].map((i) => <div key={i} className="grid gap-2"><Label htmlFor={`historical-player-${i}`}>{t.historicalPlayer(i + 1)}</Label>
+                <select id={`historical-player-${i}`} value={selected[i]} onChange={(e) => setSelected(selected.map((v, j) => j === i ? e.target.value : v))} className="w-full min-h-11 rounded-md border bg-background px-3 text-foreground">
+                  <option value="">{t.choosePlayer}</option>{players.map((p) => <option key={p.id} value={p.id}>{p.name}{p.active ? "" : ` (${t.inactive})`}</option>)}
+                </select></div>)}
+            </fieldset>)}
+          </div>
+          {invalid && <p role="alert">{t.historicalInvalid}</p>}
+          {saved && <p role="status">{t.historicalSaved}</p>}
+          <Button type="submit" disabled={pending || disabled} className="w-full sm:w-auto min-h-11">{pending ? t.saving : t.historicalEntry}</Button>
+        </form>
       </CardContent>
     </Card>
   )

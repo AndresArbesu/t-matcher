@@ -1,5 +1,5 @@
 import type { MatchHistory, Player, SavedMatch, SavedSession } from "./types"
-import type { MatchPatch, PlayerCreate, SessionDraftInput } from "./validation"
+import type { HistoricalMatchInput, MatchPatch, PlayerCreate, SessionDraftInput } from "./validation"
 
 /** Error with a status and a fixed code ("unauthorized", "conflict", "network", ...), never provider text. */
 export class ClientApiError extends Error {
@@ -41,5 +41,6 @@ export const api = {
   saveSession: (date: string, draft: SessionDraftInput) =>
     request<{ session: SavedSession | null }>(`/api/sessions/${date}`, "PUT", draft),
   setPlayed: (id: string, patch: MatchPatch) => request<SavedMatch>(`/api/matches/${id}`, "PATCH", patch),
+  addHistoricalMatch: (input: HistoricalMatchInput) => request<MatchHistory>("/api/history", "POST", input),
   listHistory: () => request<MatchHistory[]>("/api/history"),
 }

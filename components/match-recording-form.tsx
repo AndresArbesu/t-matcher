@@ -84,7 +84,7 @@ export function MatchRecordingForm({ players, matches, t, pendingId, onSetPlayed
               <Button
                 className="w-full min-h-11"
                 variant={match.played ? "outline" : "default"}
-                disabled={pending}
+                disabled={pendingId !== null}
                 onClick={() => onSetPlayed(match.id, !match.played, notes[match.id] ?? match.notes ?? "")}
               >
                 {pending ? t.saving : match.played ? t.undoPlayed : t.markPlayed}
